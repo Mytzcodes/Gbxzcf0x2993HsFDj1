@@ -1,782 +1,789 @@
-# 🚀 NXroENinD_DPcKage — Panduan Penggunaan Lengkap & API Reference
-**Version:** 3.0.0-PRO  
-**Kompatibilitas:** Luau / ByteNet Engine (GrowBlox)  
-**Standard Model:** GrowLauncher & GentaHax C++ Struct / Fast Memory Layout
+# NXroENinD_DPcKage — API & Panduan Penggunaan
+
+**Versi:** 3.1.0  
+**Repo:** https://github.com/Mytzcodes/Gbxzcf0x2993HsFDj1  
+**Folder modul di repo:** `Framework_C8&d0ScRR/`
 
 ---
 
-## 📋 Daftar Isi Cepat
-1. [Cara Pasang & Loadstring 1 Baris](#1-cara-pasang--loadstring-1-baris)
-2. [NX.Init(config) — Konfigurasi Framework](#2-nxinitconfig--konfigurasi-framework)
-3. [Network Layer — SendPkt, SendRaw, HookPkt](#3-network-layer--sendpkt-sendraw-hookpkt)
-4. [In-Game Avatar — NX.Player()](#4-in-game-avatar--nxplayer)
-5. [Inventory System — GetInvent, FindItem, CountItem](#5-inventory-system--getinvent-finditem-countitem)
-6. [World & Tile Grid — GetTile, FindTiles, TileAt](#6-world--tile-grid--gettile-findtiles-tileat)
-7. [Teleport & Pathfinding — NX.FindPath (Method 1 & 2)](#7-teleport--pathfinding--nxfindpath-method-1--2)
-8. [MultiPacket Engine — SendMulti, SendChain, SendIf, Macro](#8-multipacket-engine--sendmulti-sendchain-sendif-macro)
-9. [Action Presets Majemuk (BuyAndPlace, PlaceRow, BreakRect, dll)](#9-action-presets-majemuk)
-10. [SmoothBuf — Frame Batching & Anti-Lag](#10-smoothbuf--frame-batching--anti-lag)
-11. [Scheduler — After, Every, Cancel, NextFrame](#11-scheduler--after-every-cancel-nextframe)
-12. [Event Bus — On, Off, Emit, Once](#12-event-bus--on-off-emit-once)
-13. [Console & Output — ConsoleMsg, Log, Clear](#13-console--output--consolemsg-log-clear)
-14. [Utils Library — String, Table, Math, Color](#14-utils-library)
-15. [Studi Kasus Proyek Nyata](#15-studi-kasus-proyek-nyata)
+## Cara Install — 1 Baris di Executor
 
----
-
-## 1. Cara Pasang & Loadstring 1 Baris
-
-Framework ini menggunakan **Lazy Loader**. Modul tidak akan didownload atau memakan memori/FPS sebelum fungsi dipanggil pertama kali.
-
-### Cara Pakai di Executor / Script:
 ```lua
--- 1. Jalankan Loader dari GitHub Anda:
 loadstring(game:HttpGet("https://raw.githubusercontent.com/Mytzcodes/Gbxzcf0x2993HsFDj1/refs/heads/main/NXroENinD_DPcKage_Loader.lua"))()
+```
 
--- 2. NX sekarang tersedia secara GLOBAL di seluruh script:
+Setelah loadstring selesai, `NX` tersedia sebagai global. Langsung panggil:
+
+```lua
 NX.Init({ SmoothBuf = true })
-NX.ConsoleMsg("NXroENinD_DPcKage Siap Digunakan!", "green")
+NX.ConsoleMsg("Ready!", "green")
 ```
 
 ---
 
-## 2. NX.Init(config) — Konfigurasi Framework
+## Kenapa Error "attempt to call a nil value"?
 
-Menginisialisasi framework, memulai listener packet internal, dan mengatur opsi performa.
+Error ini muncul jika `NX` bernilai `nil` setelah loadstring. Penyebabnya:
 
-### Signature:
-```lua
-NX.Init(config: table?)
+| Penyebab | Tanda | Solusi |
+|:---|:---|:---|
+| `RAW_BASE` masih placeholder `YOUR_USER/...` | Loader lama belum di-update | Gunakan loader v3.1 di atas — URL sudah terisi otomatis |
+| `script` adalah `nil` di executor context | Modul error saat `require(script.Parent.X)` | Sudah diperbaiki di loader v3.1 via fake `script.Parent` |
+| `setfenv` tidak ada di Luau | Modul tidak menerima env injection | Loader v3.1 memakai fallback `_G` jika `setfenv` tidak ada |
+| URL modul tidak bisa diakses | HttpGet error | Pastikan repo GitHub bersifat **Public** |
+
+---
+
+## Struktur File di Repo GitHub
+
+```
+Gbxzcf0x2993HsFDj1/
+├── NXroENinD_DPcKage_Loader.lua    ← Script yang kamu paste ke executor
+└── Framework_C8&d0ScRR/
+    ├── Events.lua
+    ├── Config.lua
+    ├── Utils.lua
+    ├── SmoothBuf.lua
+    ├── Console.lua
+    ├── Network.lua
+    ├── PlayerAPI.lua
+    ├── Inventory.lua
+    ├── World.lua
+    ├── Scheduler.lua
+    ├── Teleport.lua
+    └── MultiPacket.lua
 ```
 
-### Rincian Parameter `config`:
-| Field | Tipe | Default | Penjelasan |
-|:---|:---:|:---:|:---|
-| `SmoothBuf` | `boolean` | `true` | **Wajib diaktifkan untuk spam/rapid packet.** Menggabungkan packet dalam 1 frame Heartbeat agar tidak drop FPS & tidak terkena kick rate-limit server. |
-| `LogLevel` | `number` | `1` | Level log konsol: `0` (mati), `1` (info penting), `2` (debug), `3` (verbose). |
-| `FlushRate` | `number` | `1` | Frekuensi flush buffer setiap N frame render (1 = setiap frame, latency terendah). |
-| `ConsolePrefix`| `string` | `"[NX-PRO]"` | Prefix teks pada konsol sistem. |
+---
 
-### Contoh Penggunaan:
+## NX.Init(config)
+
+Wajib dipanggil sekali setelah loadstring. Menginisialisasi semua sistem dan mendownload modul yang belum ada.
+
 ```lua
 NX.Init({
-    SmoothBuf     = true,
-    LogLevel      = 2,
-    ConsolePrefix = "[BOT-FARM]"
+    SmoothBuf     = true,            -- Packet batching per frame (sangat dianjurkan)
+    LogLevel      = 1,               -- 0=mati, 1=info, 2=debug, 3=verbose
+    ConsolePrefix = "[NX]",          -- Prefix label pada output konsol
+    FlushRate     = 1,               -- Flush buffer tiap N frame (default: 1)
 })
 ```
 
 ---
 
-## 3. Network Layer — SendPkt, SendRaw, HookPkt
+## Network — SendPkt, SendRaw, HookPkt
 
-### 3.1. `NX.SendPkt(packetRef, payload)`
-Mengirim packet berstruktur (typed packet) ke server. Jika `SmoothBuf = true`, packet akan otomatis masuk ke antrean frame saat ini dan dikirim bersamaan.
+### NX.SendPkt(packetRef, data)
 
-#### Parameter:
-* `packetRef` (`string | number`): Nama packet (misal `"ChatPacket"`) atau nomor Hex ID (misal `0x0003`).
-* `payload` (`table`): Data tabel yang cocok dengan struct payload packet tersebut.
+Mengirim typed packet ke server.
 
-#### Contoh Penggunaan Lengkap Berdasarkan Jenis Packet:
+**Parameter:**
+- `packetRef` — Nama packet (string) **atau** hex ID (number)
+- `data` — Table payload sesuai struct packet
 
 ```lua
--- A. Chat Packet (0x0003)
--- Param: message (string), channel (number: 0=World, 1=Global, 2=Whisper)
-NX.SendPkt("ChatPacket", {
-    message = "Halo dunia!",
-    channel = 0
-})
+-- Chat
+NX.SendPkt("ChatPacket", { message = "Hello!", channel = 0 })
 
--- B. Break Block / Punch (0x0005)
--- Param: x (i32), y (i32) -> koordinat tile grid map
-NX.SendPkt("BreakBlockPacket", {
-    x = 10,
-    y = 25
-})
+-- Break tile
+NX.SendPkt("BreakBlockPacket", { x = 10, y = 20 })
 
--- C. Place Block (0x0004)
--- Param: x (i32), y (i32), itemId (u16)
-NX.SendPkt("PlaceBlockPacket", {
-    x = 10,
-    y = 25,
-    itemId = 2 -- Dirt Block ID
-})
+-- Place tile
+NX.SendPkt("PlaceBlockPacket", { x = 10, y = 20, itemId = 2 })
 
--- D. Wear / Equip Item (0x0008)
--- Param: itemId (u16)
-NX.SendPkt("WearItemPacket", {
-    itemId = 300 -- Item ID baju/sayap
-})
+-- Equip item
+NX.SendPkt("WearItemPacket", { itemId = 300 })
 
--- E. Use / Activate Item (0x000B)
--- Param: itemId (u16), x (i32), y (i32)
-NX.SendPkt("UseItemPacket", {
-    itemId = 18, -- Seed ID
-    x = 10,
-    y = 24
-})
+-- Lepas item
+NX.SendPkt("RemoveItemPacket", { itemId = 300 })
 
--- F. Buy From Shop (0x001D)
--- Param: shopId (u16), itemId (u16), count (u16)
-NX.SendPkt("BuyPacket", {
-    shopId = 1,
-    itemId = 50,
-    count  = 10
-})
+-- Gunakan item di tile
+NX.SendPkt("UseItemPacket", { itemId = 18, x = 10, y = 20 })
 
--- G. Movement Packet (0x0002) - Unreliable Channel
--- Param: position (Vector3), velocity (Vector3), rotation (float)
+-- Beli dari shop
+NX.SendPkt("BuyPacket", { shopId = 1, itemId = 50, count = 10 })
+
+-- Jual ke shop
+NX.SendPkt("SellPacket", { shopId = 1, itemId = 50, count = 10 })
+
+-- Jatuhkan item
+NX.SendPkt("DropItemPacket", { itemId = 50, count = 5 })
+
+-- Ambil dropped item
+NX.SendPkt("CollectItemPacket", { objectId = 99 })
+
+-- Buang item (trash)
+NX.SendPkt("TrashItemPacket", { itemId = 50, count = 1 })
+
+-- Craft
+NX.SendPkt("CraftPacket", { recipeId = 7 })
+
+-- Respawn
+NX.SendPkt("RespawnPacket", {})
+
+-- Emote
+NX.SendPkt("EmotePacket", { emoteId = 3 })
+
+-- Masuk pintu
+NX.SendPkt("EnterDoorPacket", { x = 5, y = 10 })
+
+-- Pindah world
+NX.SendPkt("WorldRequestPacket", { worldName = "STARTHERE" })
+
+-- Lock tile
+NX.SendPkt("LockPacket", { x = 5, y = 5, action = 0 })
+-- action: 0=pasang lock, 1=hapus lock, 2=add akses, 3=hapus akses, 4=toggle public
+
+-- Edit papan tanda
+NX.SendPkt("SignEditPacket", { x = 5, y = 5, text = "Isi tanda" })
+
+-- Friend request
+NX.SendPkt("FriendPacket", { targetUserId = 123456, action = 0 })
+-- action: 0=request, 1=accept, 2=decline, 3=remove, 4=block
+
+-- Interaksi NPC
+NX.SendPkt("NpcInteractPacket", { npcId = 1, option = 0 })
+
+-- Gerak/Teleport manual via packet
 NX.SendPkt("MovementPacket", {
-    position = Vector3.new(20, 15, 0),
+    position = Vector3.new(10, 5, 0),
     velocity = Vector3.new(0, 0, 0),
     rotation = 0
 })
+
+-- Pakai hex ID langsung
+NX.SendPkt(0x0004, { x = 10, y = 20, itemId = 2 })
 ```
 
 ---
 
-### 3.2. `NX.SendRaw(buf)`
-Mengirim binary buffer mentah secara langsung melalui socket RemoteEvent ByteNet tanpa validasi typed struct. Digunakan jika ingin custom payload atau optimasi tingkat byte paling rendah.
+### NX.SendRaw(buf)
 
-#### Parameter:
-* `buf` (`buffer`): Objek buffer native Roblox (`typeof(buf) == "buffer"`).
+Kirim binary buffer mentah (bypass typed system).
 
-#### Contoh Penggunaan:
+**Parameter:**
+- `buf` — Roblox `buffer` object
+
 ```lua
--- Membuat binary buffer manual untuk ChatPacket (ID: 0x0003)
-local msg = "Raw packet payload"
+-- Contoh: buat raw ChatPacket dari byte
+local msg    = "Hello raw"
 local msgLen = #msg
-local totalSize = 2 + 2 + msgLen + 1 -- [ID:2b] + [StrLen:2b] + [Str:Nb] + [Channel:1b]
+local buf    = buffer.create(2 + 2 + msgLen + 1)
+local c      = 0
 
-local rawBuf = buffer.create(totalSize)
-local cursor = 0
+buffer.writeu16(buf, c, 0x0003)        ; c += 2
+buffer.writeu16(buf, c, msgLen)        ; c += 2
+buffer.writestring(buf, c, msg)        ; c += msgLen
+buffer.writeu8(buf, c, 0)
 
-buffer.writeu16(rawBuf, cursor, 0x0003)      cursor += 2      -- Packet ID
-buffer.writeu16(rawBuf, cursor, msgLen)      cursor += 2      -- String length prefix
-buffer.writestring(rawBuf, cursor, msg)      cursor += msgLen -- Teks string
-buffer.writeu8(rawBuf, cursor, 0)                             -- Channel 0
-
--- Kirim langsung:
-NX.SendRaw(rawBuf)
+NX.SendRaw(buf)
 ```
 
 ---
 
-### 3.3. `NX.HookPkt(packetRef, callback)` & `NX.UnhookPkt(handle)`
-Memasang listener penyadap (tap interceptor) untuk membaca packet masuk dari server sebelum diproses game.
+### NX.HookPkt(packetRef, callback) → handle
 
-#### Parameter:
-* `packetRef` (`string | number`): Nama atau ID packet yang disadap.
-* `callback` (`function(data, packetId)`): Fungsi yang dipanggil saat packet tiba.
-* *Return:* `handle` (`table`) — token untuk menghapus hook.
+Pasang listener yang terpanggil setiap kali packet tertentu masuk dari server.
 
-#### Contoh Penggunaan:
+**Parameter:**
+- `packetRef` — Nama atau hex ID packet
+- `callback(data, packetId)` — Fungsi listener
+
+**Return:** `handle` untuk melepas hook dengan `NX.UnhookPkt(handle)`
+
 ```lua
--- Sadap TileUpdatePacket (0x000F): Tahu seketika jika ada player merusak/menaruh balok
-local tileHook = NX.HookPkt("TileUpdatePacket", function(data, id)
-    print(string.format("Tile berubah di (%d, %d) | FG: %d | BG: %d | Flags: 0x%X",
+-- Sadap setiap perubahan tile di map
+local h = NX.HookPkt("TileUpdatePacket", function(data)
+    print(string.format("Tile (%d,%d) berubah → fg:%d bg:%d flags:0x%X",
         data.x, data.y, data.fg, data.bg, data.flags))
 end)
 
--- Sadap saat ada player lain yang bergabung ke world
-local joinHook = NX.HookPkt("PlayerJoinPacket", function(data)
-    NX.ConsoleMsg("Player Baru: " .. data.name .. " (ID: " .. data.userId .. ")", "cyan")
+-- Sadap player baru masuk
+local h2 = NX.HookPkt("PlayerJoinPacket", function(data)
+    print("Join:", data.name, data.userId, data.position)
 end)
 
--- Melepas hook setelah 30 detik:
-NX.After(30, function()
-    NX.UnhookPkt(tileHook)
-    NX.ConsoleMsg("Hook tile dinonaktifkan.", "yellow")
+-- Sadap pesan konsol dari server
+local h3 = NX.HookPkt("ConsoleMessagePacket", function(data)
+    print("[SERVER MSG]", data.text)
+end)
+
+-- Lepas hook
+NX.UnhookPkt(h)
+NX.UnhookPkt(h2)
+
+-- Sadap via ID angka
+local h4 = NX.HookPkt(0x0010, function(data)
+    -- InventoryUpdatePacket
+    print("Inventory sync:", #data.items, "items")
 end)
 ```
 
 ---
 
-## 4. In-Game Avatar — NX.Player()
+## Player — NX.Player()
 
-Berbeda dari script umum yang memakai `game.Players.LocalPlayer.Character`, `NX.Player()` mengambil data **murni dari stream packet server**:
-* Nama in-game bukan nama akun Roblox.
-* `CurrentPosition` tetap update meskipun karakter Roblox sedang desync atau respawn.
+Data avatar bersumber dari **game packet**, bukan `Players.LocalPlayer`.
 
-### Properti Objek `NX.Player()`:
 ```lua
-local me = NX.Player()
+local p = NX.Player()
 
-print(me.name)            -- string  -> Nama tampilan in-game
-print(me.userId)          -- number  -> ID entitas unik in-game
-print(me.CurrentPosition) -- Vector3 -> Posisi real-time dari packet
-print(me.CurrentVelocity) -- Vector3 -> Kecepatan gerak physics
-print(me.CurrentRotation) -- number  -> Sudut hadap avatar (radians)
-print(me.count)           -- number  -> Jumlah player di dalam world saat ini
-print(#me.list)           -- number  -> Array seluruh PlayerObject di world
+-- Properti local player
+print(p.name)              -- Nama in-game dari PlayerJoinPacket
+print(p.userId)            -- ID entitas game
+print(p.CurrentPosition)   -- Vector3 dari PlayerUpdatePacket
+print(p.CurrentVelocity)   -- Vector3 dari MovementPacket
+print(p.CurrentRotation)   -- float (radians)
+print(p.count)             -- Jumlah player di world
+print(#p.list)             -- Array semua PlayerObject
 ```
 
-### Method Helper `NX.Player()`:
+### p.find(query) → PlayerObject?
+
 ```lua
--- 1. me.find(query) -> PlayerObject?
--- Mencari player lain berdasarkan nama (partial case-insensitive) atau userId
+-- Cari by nama (partial, case-insensitive)
 local target = NX.Player().find("Defin")
 if target then
-    print("Ditemukan:", target.name, "pada posisi:", target.CurrentPosition)
+    print(target.name, target.CurrentPosition, target.CurrentAnim)
 end
 
--- 2. me.nearest(maxRadius?) -> PlayerObject?, distance
--- Mencari avatar lain paling dekat dalam radius tertentu (studs)
-local nearestTarget, distance = NX.Player().nearest(40)
-if nearestTarget then
-    NX.ConsoleMsg(string.format("Paling dekat: %s (Jarak: %.1f studs)", 
-        nearestTarget.name, distance), "yellow")
-end
+-- Cari by userId
+local p2 = NX.Player().find(123456789)
+```
 
--- 3. me.forEach(callback)
--- Melakukan perulangan ke seluruh player. Return false untuk break loop.
-NX.Player().forEach(function(playerObj)
-    print(playerObj.name, playerObj.CurrentPosition)
-    if playerObj.name == "Admin" then
-        return false -- Hentikan loop
+### p.nearest(maxDist?) → PlayerObject?, number
+
+```lua
+-- Player lain paling dekat dalam radius 50 studs
+local near, dist = NX.Player().nearest(50)
+if near then
+    print("Paling dekat:", near.name, "jarak:", math.floor(dist), "studs")
+end
+```
+
+### p.forEach(fn)
+
+```lua
+-- Iterasi semua player, return false untuk break
+NX.Player().forEach(function(obj)
+    print(obj.name, obj.CurrentPosition)
+    if obj.name == "Target" then
+        return false  -- hentikan loop
     end
 end)
+```
 
--- 4. playerObj:DistanceTo(target) -> number
--- Mengukur jarak antara avatar ke objek lain (bisa PlayerObject atau Vector3)
+### PlayerObject:DistanceTo(target)
+
+```lua
+local me     = NX.Player().self
+local target = NX.Player().find("SomePlayer")
 if target then
-    local dist = NX.Player().self:DistanceTo(target)
-    print("Jarak ke target:", dist)
+    print("Jarak:", me:DistanceTo(target))
 end
 ```
 
 ---
 
-## 5. Inventory System — GetInvent, FindItem, CountItem
+## Inventory — GetInvent, FindItem, CountItem
 
-Inventory di-sync secara otomatis saat server mengirim `InventoryUpdatePacket (0x0010)`.
+### NX.GetInvent() → table[]
 
-### 5.1. `NX.GetInvent()`
-Mengembalikan tabel array murni (`#table`) berisi seluruh slot item tas:
+Mengembalikan array semua item di tas. Update otomatis saat `InventoryUpdatePacket` masuk.
 
 ```lua
 local inv = NX.GetInvent()
-NX.ConsoleMsg("Jumlah slot item di tas: " .. #inv, "cyan")
+print("Slot terisi:", #inv)
 
-for index, item in ipairs(inv) do
-    print(string.format("[%d] %s (ID: %d) x%d | Tipe: %s | Equipped: %s",
-        index, item.name, item.id, item.count, item.type, tostring(item.equipped)))
+for i, item in ipairs(inv) do
+    -- item.id         (number) ID item
+    -- item.count      (number) jumlah stack
+    -- item.name       (string) nama dari ItemDatabase
+    -- item.type       (string) "block","seed","tool","clothing","consumable"
+    -- item.rarity     (number) 0-7
+    -- item.equipped   (bool)   sedang dipakai
+    -- item.stackable  (bool)
+    -- item.maxStack   (number)
+    print(i, item.name, item.count, item.type, item.equipped)
 end
 ```
 
-#### Struktur Data `InvItem`:
+### NX.FindItem(query) → InvItem?
+
 ```lua
-{
-    id        = 2,              -- (number) Item database ID
-    count     = 150,            -- (number) Jumlah item tumpukan
-    name      = "Dirt",         -- (string) Nama resmi dari ItemDatabase
-    type      = "block",        -- (string) "block", "seed", "tool", "clothing", "consumable"
-    rarity    = 1,              -- (number) Tingkat kelangkaan (0-7)
-    stackable = true,           -- (boolean)
-    maxStack  = 200,            -- (number) Kapasitas max tumpukan
-    equipped  = false,          -- (boolean) Sedang dipakai di badan avatar
-    flags     = 0               -- (number) Bitmask state item
-}
+local dirt = NX.FindItem("Dirt")          -- cari by nama (partial match)
+local item = NX.FindItem(1234)             -- cari by ID
+
+if dirt then
+    -- Langsung gunakan
+    NX.SendPkt("UseItemPacket", { itemId = dirt.id, x = 10, y = 20 })
+end
 ```
 
-### 5.2. Query Helpers:
+### NX.CountItem(query) → number
+
 ```lua
--- A. Mencari 1 item pertama (by nama atau by ID)
-local pickaxe = NX.FindItem("Pickaxe")
-local seedItem = NX.FindItem(18) -- ID 18
-if pickaxe then
-    print("Punya pickaxe:", pickaxe.name, "Equipped:", pickaxe.equipped)
+local total = NX.CountItem("Wood")
+print("Total Wood:", total)
+```
+
+### NX.HasItem(query, minCount?) → bool
+
+```lua
+if NX.HasItem("Magic Seed", 5) then
+    print("Punya 5+ magic seed")
 end
+```
 
--- B. Menghitung total item di seluruh slot (akumulasi jika split slot)
-local totalDirt = NX.CountItem("Dirt")
-print("Total Dirt di tas:", totalDirt)
+### NX.FindAllItems(query) → table[]
 
--- C. Pengecekan boolean cepat (HasItem)
-if NX.HasItem("World Lock", 1) then
-    NX.ConsoleMsg("Punya minimal 1 World Lock!", "green")
+```lua
+-- Semua slot yang mengandung item dengan nama "Seed"
+local seeds = NX.FindAllItems("Seed")
+for _, s in ipairs(seeds) do
+    print(s.name, s.count)
 end
+```
 
--- D. Mengambil seluruh item yang sedang dipakai (Equipped)
-local wornItems = NX.GetEquipped()
-for _, item in ipairs(wornItems) do
-    print("Sedang memakai:", item.name)
+### NX.GetEquipped() → table[]
+
+```lua
+local worn = NX.GetEquipped()
+for _, w in ipairs(worn) do
+    print("Pakai:", w.name)
 end
+```
 
--- E. Filter berdasarkan kategori tipe
-local allSeeds = NX.GetByType("seed")
-print("Total variasi seed:", #allSeeds)
+### NX.GetByType(typeName) → table[]
+
+```lua
+local blocks  = NX.GetByType("block")
+local seeds   = NX.GetByType("seed")
+local clothes = NX.GetByType("clothing")
+local tools   = NX.GetByType("tool")
 ```
 
 ---
 
-## 6. World & Tile Grid — GetTile, FindTiles, TileAt
+## World & Tile — GetTile, FindTiles, TileAt
 
-Map GrowBlox terdiri dari grid ukuran `100 x 60` tile.
+### NX.GetWorld() → WorldData?
 
-### 6.1. `NX.GetTile(x, y)` → TileObject?
-Mengambil data detail pada koordinat grid tertentu (0-indexed).
+```lua
+local w = NX.GetWorld()
+if w then
+    print("World  :", w.name)
+    print("Ukuran :", w.width, "x", w.height)
+    print("Pemilik:", w.ownerId)
+    print("Cuaca  :", w.weatherType)
+end
+```
+
+### NX.GetTile(x, y) → TileObject?
 
 ```lua
 local tile = NX.GetTile(10, 20)
 if tile then
-    print("Tile (10, 20):")
-    print("  Foreground ID :", tile.foreground)
-    print("  Background ID :", tile.background)
-    print("  Growth Stage  :", tile.growth) -- 0 sampai 7 untuk pohon
-    print("  Lock Owner ID :", tile.lockOwner)
+    print("FG ID       :", tile.foreground)
+    print("BG ID       :", tile.background)
+    print("Growth stage:", tile.growth)      -- 0-7 untuk pohon
+    print("Lock owner  :", tile.lockOwner)   -- 0 = tidak terkunci
+    print("Flags (hex) :", string.format("0x%X", tile.flags))
 
-    -- Method Helper Boolean:
-    print("  Solid Wall?   :", tile:isSolid())   -- Menahan player
-    print("  Is Locked?    :", tile:isLocked())  -- Terkunci
-    print("  Is Tree?      :", tile:isTree())    -- Ada tanaman
-    print("  Is Door?      :", tile:isDoor())    -- Portal/Pintu
-    print("  Is Empty?     :", tile:isEmpty())   -- Udara kosong (tanpa balok)
+    -- Helper boolean (tidak perlu hitung bitmask manual)
+    print("Solid wall? :", tile:isSolid())
+    print("Locked?     :", tile:isLocked())
+    print("Has tree?   :", tile:isTree())
+    print("Is door?    :", tile:isDoor())
+    print("Has sign?   :", tile:hasSign())
+    print("Is public?  :", tile:isPublic())
+    print("Is empty?   :", tile:isEmpty())   -- tidak ada fg & bg
 end
 ```
 
-### 6.2. `NX.FindTiles(predicate)` → TileObject[]
-Menyaring seluruh map dengan kriteria kustom. Sangat cepat karena diiterasi dari memory cache lokal.
+### NX.FindTiles(predicate) → TileObject[]
+
+Predicate: `function(tile) return bool end`
 
 ```lua
--- A. Mencari seluruh pohon yang sudah matang (growth == 7) siap dipanen
-local readyTrees = NX.FindTiles(function(t)
-    return t:isTree() and t.growth >= 7
-end)
-NX.ConsoleMsg("Pohon siap panen: " .. #readyTrees, "green")
+-- Pohon matang (stage 7)
+local ripe = NX.FindTiles(function(t) return t:isTree() and t.growth >= 7 end)
+print("Pohon siap panen:", #ripe)
 
--- B. Mencari semua tile kosong yang aman untuk ditanami bibit
-local plantableTiles = NX.FindTiles(function(t)
-    return t:isEmpty() and not t:isLocked()
-end)
+-- Semua tile kosong dan tidak dikunci (untuk menanam)
+local empty = NX.FindTiles(function(t) return t:isEmpty() and not t:isLocked() end)
 
--- C. Mencari posisi World Lock di map
-local locks = NX.FindTiles(function(t)
-    return t.foreground == 242 -- ID World Lock
+-- Tile dengan ID foreground tertentu
+local dirt = NX.FindTiles(function(t) return t.foreground == 2 end)
+
+-- Tile yang bisa ditanami bibit
+local plantable = NX.FindTiles(function(t)
+    return bit32.band(t.flags, 0x00000002) ~= 0  -- TILE_SEEDABLE flag
 end)
 ```
 
-### 6.3. `NX.TileAt(worldPosition: Vector3)` → TileObject?
-Mengonversi koordinat dunia Vector3 (posisi avatar) ke grid Tile secara otomatis:
+### NX.TileAt(worldPos: Vector3) → TileObject?
+
 ```lua
-local myPos = NX.Player().CurrentPosition
-local currentTile = NX.TileAt(myPos)
-if currentTile then
-    print("Avatar sedang berdiri di atas tile ID:", currentTile.foreground)
+-- Tile di bawah avatar saat ini
+local tile = NX.TileAt(NX.Player().CurrentPosition)
+if tile then
+    print("Berdiri di atas tile FG:", tile.foreground)
 end
 ```
 
 ---
 
-## 7. Teleport & Pathfinding — NX.FindPath (Method 1 & 2)
+## Teleport — NX.FindPath(x, y, method, callback?)
 
-Fitur navigasi cerdas dengan dua metode berbeda sesuai kebutuhan kasus:
+Navigasi ke tile tujuan. Dua metode dengan cara kerja berbeda.
 
-### Signature:
-```lua
-local handle = NX.FindPath(x: number, y: number, method: number?, callback: function?)
-```
+**Parameter:**
+- `x`, `y` — Koordinat tile target
+- `method` — `1` atau `2` (lihat tabel di bawah)
+- `callback(success, pos)` — Dipanggil saat tiba atau gagal (opsional)
 
-### Parameter:
-* `x`, `y` (`number`): Koordinat target grid tile tujuan.
-* `method` (`number`):
-  * `1` (**Direct Teleport**): Mengirim 1 `MovementPacket` instan ke titik target. Tanpa jeda, langsung tiba.
-  * `2` (**A\* Grid Walk**): Menghitung rute A* yang bebas dari tembok solid (`TILE_SOLID`), lalu melangkahkan avatar step-by-step dengan micro-delay (`0.08s`) dan interpolasi velocity. Terlihat natural bagi server dan anti-kick.
-* `callback` (`function(success: boolean, finalPos: Vector3)`): Dipanggil saat tiba di tujuan atau jika jalur gagal ditemukan.
-* *Return:* `handle` `{ Cancel: function }` untuk membatalkan proses jalan di tengah jalan.
+**Return:** `{ Cancel = function() }` — token pembatal
 
-### Contoh Penggunaan:
+| method | Cara Kerja | Cocok Untuk |
+|:---:|:---|:---|
+| `1` | 1 `MovementPacket` instan ke tujuan | Private world, teleport cepat |
+| `2` | Kalkulasi A* menghindari solid tile, kirim packet bertahap tiap `0.08s` | Publik, terlihat natural |
 
 ```lua
--- ==============================================================
--- METODE 1: TELEPORT INSTAN (Method 1)
--- ==============================================================
-NX.FindPath(25, 40, 1, function(ok, pos)
+-- Method 1: Teleport instan
+NX.FindPath(50, 30, 1, function(ok, pos)
+    if ok then print("Tiba instan di", pos) end
+end)
+
+-- Method 2: Jalan natural menghindari tembok
+local handle = NX.FindPath(50, 30, 2, function(ok, pos)
     if ok then
-        NX.ConsoleMsg("Teleport instan berhasil ke " .. tostring(pos), "green")
-    end
-end)
-
--- ==============================================================
--- METODE 2: A* COLLISION-AWARE WALK (Method 2)
--- Menghindari balok solid dan berjalan natural
--- ==============================================================
-local walkTask = NX.FindPath(80, 20, 2, function(success, pos)
-    if success then
-        NX.ConsoleMsg("Tiba di tujuan dengan selamat!", "green")
-        -- Mulai aksi panen atau memukul balok di sini:
-        NX.SendPkt("BreakBlockPacket", { x = 80, y = 20 })
+        print("Sampai dengan aman!")
+        -- Lakukan aksi setelah tiba:
+        NX.SendPkt("BreakBlockPacket", { x = 50, y = 30 })
     else
-        NX.ConsoleMsg("Gagal: Rute terhalang oleh tembok/tanah tertutup!", "red")
+        print("Tidak ada jalur yang bisa dilalui")
     end
 end)
 
--- Jika perlu membatalkan navigasi sewaktu-waktu:
-NX.After(3, function()
-    -- walkTask.Cancel() -- Batalkan jika player ingin berhenti
-end)
+-- Batalkan jalan di tengah:
+handle.Cancel()
+
+-- Batalkan semua jalan aktif:
+NX.CancelWalk()
+
+-- Tuning kecepatan method 2:
+NX.Teleport.SetStepDelay(0.06)   -- makin kecil makin cepat (default 0.08)
+NX.Teleport.SetTileSize(2)       -- ukuran tile dalam studs (default 2)
 ```
 
 ---
 
-## 8. MultiPacket Engine — SendMulti, SendChain, SendIf, Macro
+## MultiPacket — SendMulti, SendChain, SendIf
 
-Menyelesaikan masalah kompleks di mana **beberapa tipe packet harus dikirim dalam satu alur teratur**.
-
-### 8.1. `NX.SendMulti(...)` — Atomic Frame Batch
-Mengirim banyak packet berbeda tipe sekaligus dalam 1 frame flush yang sama.
+### NX.SendMulti(...) — Kirim banyak tipe packet sekaligus (1 frame)
 
 ```lua
--- Membeli item lalu seketika memasangnya di badan (Buy + Wear di frame yang sama)
+-- Beli item + langsung equip dalam satu frame
 NX.SendMulti(
     { "BuyPacket",      { shopId = 1, itemId = 300, count = 1 } },
-    { "WearItemPacket", { itemId = 300 } },
-    { "EmotePacket",    { emoteId = 2 } }
+    { "WearItemPacket", { itemId = 300 } }
+)
+
+-- Break 3 tile sekaligus
+NX.SendMulti(
+    { "BreakBlockPacket", { x = 5, y = 5 } },
+    { "BreakBlockPacket", { x = 6, y = 5 } },
+    { "BreakBlockPacket", { x = 7, y = 5 } }
 )
 ```
 
-### 8.2. `NX.SendChain(steps)` — Sequenced Execution with Delays
-Mengirim packet berurutan dengan jeda waktu teratur per langkah. Menghindari packet bertubrukan sebelum server sempat merespons langkah sebelumnya.
+### NX.SendChain(steps) → { Cancel() } — Berurutan dengan delay
 
-*Format step:* `{ "PacketName", payloadTable, delayAfterStepInSeconds? }`
+Format per step: `{ "PacketName", payloadTable, delaySetelahStepIni? }`
 
 ```lua
+-- Beli → tunggu 0.2s → tanam → tunggu 0.1s → chat
 local chain = NX.SendChain({
-    -- Langkah 1: Beli item dari shop, tunggu 0.2 detik agar masuk inventory
-    { "BuyPacket", { shopId = 1, itemId = 18, count = 5 }, 0.2 },
-
-    -- Langkah 2: Tanam bibit di koordinat (10, 20), tunggu 0.1 detik
-    { "UseItemPacket", { itemId = 18, x = 10, y = 20 }, 0.1 },
-
-    -- Langkah 3: Beri notifikasi chat
-    { "ChatPacket", { message = "Bibit berhasil ditanam!", channel = 0 } }
+    { "BuyPacket",     { shopId = 1, itemId = 18, count = 1 }, 0.2 },
+    { "UseItemPacket", { itemId = 18, x = 10, y = 20 },        0.1 },
+    { "ChatPacket",    { message = "Done!", channel = 0 } }
 })
 
--- Bisa di-cancel jika kondisi berubah:
--- chain.Cancel()
+-- Batalkan chain:
+chain.Cancel()
 ```
 
-### 8.3. `NX.SendIf(condition, thenPackets, elsePackets?)`
-Kondisional packet pipeline. Mengirim kumpulan packet A jika kondisi terpenuhi, atau packet B jika tidak.
+### NX.SendIf(condition, thenPkts, elsePkts?) — Kondisional
 
 ```lua
--- Cek apakah player memiliki bibit sebelum menaruh
 NX.SendIf(
     NX.HasItem("Magic Seed", 1),
-    {
-        { "UseItemPacket", { itemId = 18, x = 15, y = 20 } }
-    },
-    {
-        { "ChatPacket", { message = "Stok bibit habis!", channel = 0 } }
-    }
+    -- Jika punya seed:
+    { { "UseItemPacket", { itemId = 18, x = 10, y = 20 } } },
+    -- Jika tidak punya:
+    { { "ChatPacket",    { message = "No seeds!", channel = 0 } } }
 )
 ```
 
-### 8.4. Macro Reusable Engine (`NX.DefineMacro` & `NX.RunMacro`)
-Membuat template kombinasi packet sekali, lalu menjalankannya berulang kali dengan parameter koordinat dinamis.
+### NX.DefineMacro / NX.RunMacro — Template Reusable
 
 ```lua
--- 1. Definisikan Macro:
-NX.DefineMacro("PlantSequence", {
-    { "BreakBlockPacket", { x = 0, y = 0 }, 0.08 }, -- Pukul dulu
-    { "UseItemPacket",    { itemId = 18, x = 0, y = 0 } } -- Tanam seed
+-- Definisi sekali
+NX.DefineMacro("HarvestAndPlant", {
+    { "BreakBlockPacket", { x = 0, y = 0 },              0.1 },
+    { "UseItemPacket",    { itemId = 18, x = 0, y = 0 } }
 })
 
--- 2. Jalankan Macro dengan koordinat berbeda-beda:
-NX.RunMacro("PlantSequence", {
-    { x = 10, y = 15 },             -- Override step 1
-    { itemId = 18, x = 10, y = 15 } -- Override step 2
-})
-
-NX.RunMacro("PlantSequence", {
-    { x = 11, y = 15 },
-    { itemId = 18, x = 11, y = 15 }
+-- Jalankan berkali-kali dengan koordinat berbeda
+NX.RunMacro("HarvestAndPlant", {
+    { x = 10, y = 15 },
+    { itemId = 18, x = 10, y = 15 }
 })
 ```
 
 ---
 
-## 9. Action Presets Majemuk
-
-Fungsi tingkat tinggi yang sudah dirakit siap pakai:
+## Preset MultiPacket Siap Pakai
 
 ```lua
--- 1. Beli dari toko dan langsung letakkan di tile (x, y)
+-- Beli dari shop lalu langsung place di tile
 NX.MultiPacket.BuyAndPlace(shopId, itemId, count, x, y)
 
--- 2. Menempatkan barisan balok lurus (Horizontal Line Placer)
--- Param: itemId, startX, y, length, direction (1 = kanan, -1 = kiri)
-NX.MultiPacket.PlaceRow(2, 10, 25, 15, 1)
+-- Pasang barisan block horizontal
+-- direction: 1=kanan, -1=kiri (default 1)
+NX.MultiPacket.PlaceRow(itemId, startX, y, length, direction)
 
--- 3. Menghancurkan area kotak persegi (Area Destroyer)
--- Param: x1, y1, x2, y2
-NX.MultiPacket.BreakRect(10, 20, 15, 25)
+-- Hancurkan area persegi (x1,y1) sampai (x2,y2)
+NX.MultiPacket.BreakRect(x1, y1, x2, y2)
 
--- 4. Pakai item lalu gunakan pada tile
-NX.MultiPacket.EquipAndUse(itemId, tileX, tileY)
+-- Equip item lalu gunakan di tile
+NX.MultiPacket.EquipAndUse(itemId, x, y)
 
--- 5. Crafting lalu otomatis memakai hasilnya
-NX.MultiPacket.CraftAndWear(recipeId, resultItemId)
+-- Craft lalu langsung equip hasilnya
+NX.MultiPacket.CraftAndWear(recipeId, itemId)
 
--- 6. Jual-Beli Arbitrage Otomatis Antar Toko
+-- Beli dari satu shop, jual ke shop lain
 NX.MultiPacket.BuySellArbitrage(buyShopId, sellShopId, itemId, count)
 
--- 7. Ajukan Trade dan Otomatis Isi Penawaran Item
+-- Ajak trade, isi offer, lalu confirm
 NX.MultiPacket.TradeAndConfirm(targetUserId, {
-    { id = 50,  count = 10 },
+    { id = 50, count = 10 },
     { id = 300, count = 1 }
 })
+
+-- Add friend + kirim chat
+NX.MultiPacket.FriendAndChat(targetUserId, "Hey!")
 ```
 
 ---
 
-## 10. SmoothBuf — Frame Batching & Anti-Lag
-
-Jika script executor mengirim puluhan `SendPkt` per detik secara mentah, Roblox akan mengalami spike network CPU dan server akan melakukan auto-kick.
-
-`SmoothBuf` memecahkan masalah ini dengan cara:
-1. Menyimpan packet dalam memori queue per-frame.
-2. Menggabungkannya saat event `RunService.Heartbeat` terjadi (1 flush per frame).
-3. Mengurangi overhead syscall socket RemoteEvent hingga 80%.
+## SmoothBuf — Frame Batching
 
 ```lua
--- Aktifkan SmoothBuf
+-- Toggle
 NX.SetSmoothBuf(true)
+NX.SetSmoothBuf(false)
 
--- Jika butuh melepaskan antrean saat ini secara paksa (misal sebelum teleport):
+-- Flush paksa sekarang
 NX.SmoothBuf.Flush()
 
--- Cek jumlah packet yang sedang antre di buffer:
-local pending = NX.SmoothBuf.GetQueueSize()
-print("Packet antre:", pending)
-
--- Mengatur frekuensi flush (default = 1 frame)
+-- Atur frekuensi flush (default: 1 = tiap frame)
 NX.SmoothBuf.SetFlushRate(1)
+NX.SmoothBuf.SetFlushRate(2)
+
+-- Cek jumlah packet di antrean
+print(NX.SmoothBuf.GetQueueSize())
 ```
 
 ---
 
-## 11. Scheduler — After, Every, Cancel, NextFrame
-
-Manajemen waktu tugas berulang yang aman dari memory leak.
+## Scheduler — After, Every, Cancel
 
 ```lua
--- A. Menjalankan 1 kali setelah jeda waktu (detik)
-local t1 = NX.After(2.5, function()
-    NX.ConsoleMsg("2.5 detik telah berlalu!", "yellow")
+-- Sekali setelah N detik
+NX.After(3, function()
+    print("3 detik kemudian")
 end)
 
--- B. Menjalankan tugas berulang setiap N detik
-local count = 0
-local repeatTask = NX.Every(1.0, function()
-    count += 1
-    NX.ConsoleMsg("Tick: " .. count)
-
-    -- Self-cancel: Return false dari dalam fungsi untuk berhenti otomatis
-    if count >= 10 then
-        NX.ConsoleMsg("Selesai 10 hitungan. Loop berhenti.", "green")
-        return false
-    end
+-- Berulang tiap N detik, return false untuk stop
+local t = NX.Every(1, function()
+    print("Setiap detik")
 end)
+NX.Cancel(t)
 
--- C. Membatalkan tugas secara manual dari luar:
-NX.After(5, function()
-    NX.Cancel(repeatTask)
-end)
-
--- D. Menjalankan fungsi tepat pada 1 frame berikutnya:
+-- Frame berikutnya
 NX.NextFrame(function()
-    print("Frame render berikutnya!")
+    print("Next frame!")
 end)
 ```
 
 ---
 
-## 12. Event Bus — On, Off, Emit, Once
-
-Sistem komunikasi internal reaktif berbasis event:
+## Events
 
 ```lua
--- A. Subscribe ke event built-in framework:
-local joinListener = NX.Events.On("player:join", function(playerObj)
-    NX.ConsoleMsg("Player Masuk: " .. playerObj.name, "green")
+-- Subscribe
+local h = NX.Events.On("player:join", function(p)
+    print("Join:", p.name)
 end)
 
--- B. Unsubscribe event:
-NX.Events.Off(joinListener)
+-- Unsubscribe
+NX.Events.Off(h)
 
--- C. Subscribe 1 kali saja (auto hapus setelah terpanggil):
-NX.Events.Once("world:loaded", function(worldData)
-    NX.ConsoleMsg("Selamat datang di world: " .. worldData.name, "cyan")
+-- Sekali saja
+NX.Events.Once("world:loaded", function(w)
+    print("World loaded:", w.name)
 end)
 
--- D. Emit Custom Event Antar-Script:
-NX.Events.Emit("autoFarm:statusChanged", { active = true, speed = 25 })
-
-NX.Events.On("autoFarm:statusChanged", function(state)
-    print("Status bot:", state.active, "Kecepatan:", state.speed)
-end)
+-- Custom event
+NX.Events.Emit("myScript:done", { result = 42 })
+NX.Events.On("myScript:done", function(d) print(d.result) end)
 ```
 
-### Event Bawaan Framework yang Tersedia:
-| Event Name | Parameter Data | Kapan Dipicu |
+**Event bawaan:**
+
+| Event | Data | Kapan |
 |:---|:---|:---|
-| `"player:join"` | `PlayerObject` | Avatar lain masuk map |
-| `"player:leave"` | `PlayerObject` | Avatar lain keluar map |
-| `"inventory:update"` | `InvItem[]` | Tas inventory diperbarui dari server |
-| `"world:loaded"` | `WorldData` | Data map dunia selesai di-load |
-| `"tile:update"` | `TileObject` | Balok di map dipukul, dipasang, atau diubah |
-| `"tile:growth"` | `TileObject` | Pohon atau tanaman naik stage |
-| `"teleport:arrive"` | `{ x, y, method }` | Method navigasi `FindPath` tiba di tujuan |
-| `"teleport:npath"` | `{ x, y }` | Rute A* `FindPath` tidak menemukan jalan |
-| `"smoothbuf:flush"` | `count: number` | Batch packet frame dilepaskan |
-| `"packet:<id>"` | `data` | Semua packet masuk (misal: `"packet:16"`) |
+| `player:join` | `PlayerObject` | Player masuk world |
+| `player:leave` | `PlayerObject` | Player keluar world |
+| `inventory:update` | `InvItem[]` | Inventory di-sync server |
+| `world:loaded` | `WorldData` | Data world diterima |
+| `tile:update` | `TileObject` | Tile berubah |
+| `tile:growth` | `TileObject` | Pohon naik stage |
+| `teleport:arrive` | `{x,y,method}` | Navigasi tiba |
+| `teleport:npath` | `{x,y}` | Tidak ada jalur A* |
+| `smoothbuf:flush` | `count` | Batch packet dikirim |
+| `packet:16` | `data` | Contoh: InventoryUpdatePacket |
 
 ---
 
-## 13. Console & Output — ConsoleMsg, Log, Clear
-
-Menampilkan informasi berwarna pada GUI game console internal dan standard output Roblox:
+## Console
 
 ```lua
--- Teks dengan pilihan warna instan:
-NX.ConsoleMsg("Operasi Berhasil!", "green")
-NX.ConsoleMsg("Peringatan Sistem", "yellow")
-NX.ConsoleMsg("Terjadi Kesalahan!", "red")
-NX.ConsoleMsg("Info Navigasi", "cyan")
-NX.ConsoleMsg("Data Ringan", "gray")
-NX.ConsoleMsg("Penting", "orange")
-NX.ConsoleMsg("Khusus", "purple")
-
--- Menggunakan Color3 custom:
-NX.ConsoleMsg("Custom RGB", Color3.fromRGB(255, 100, 200))
-
--- Log berjenjang (hanya muncul jika LogLevel mencukupi):
-NX.ConsoleLog("Pesan info biasa", 1)
-NX.ConsoleLog("Pesan detail debug", 2)
-
--- Bersihkan riwayat konsol:
+NX.ConsoleMsg("Teks biasa")
+NX.ConsoleMsg("Sukses!",   "green")
+NX.ConsoleMsg("Warning!",  "yellow")
+NX.ConsoleMsg("Error!",    "red")
+NX.ConsoleMsg("Info",      "cyan")
+NX.ConsoleMsg("Detail",    "gray")
+NX.ConsoleMsg("Penting",   "orange")
+NX.ConsoleMsg("Spesial",   "purple")
+NX.ConsoleMsg("Custom",    Color3.fromRGB(100, 200, 255))
+NX.ConsoleLog("Debug detail", 2)   -- hanya muncul jika LogLevel >= 2
 NX.ConsoleClear()
 ```
 
 ---
 
-## 14. Utils Library
-
-Fungsi pembantu yang siap digunakan untuk kalkulasi script:
+## Utils
 
 ```lua
 local U = NX.Utils
 
--- String Helpers
-U.trim("   teks rapi   ")         -- "teks rapi"
-U.split("apel,jeruk,mangga", ",") -- {"apel", "jeruk", "mangga"}
-U.startsWith("ChatPacket", "Chat")-- true
+U.trim("  teks  ")            -- "teks"
+U.split("a,b,c", ",")         -- {"a","b","c"}
+U.startsWith("ChatPacket","Chat")  -- true
 
--- Math & Jarak
-local dist = U.dist2D(0, 0, 10, 10)
-local rounded = U.round(3.14159, 2) -- 3.14
-local clamped = U.clamp(120, 0, 100)-- 100
+U.lerp(0, 100, 0.5)           -- 50
+U.clamp(120, 0, 100)          -- 100
+U.round(3.14159, 2)           -- 3.14
+U.dist2D(0,0, 3,4)            -- 5
+U.dist3D(vecA, vecB)          -- magnitude
 
--- Format Waktu
-print(U.formatTime(3665)) -- "01:01:05"
-
--- Konversi Packet ID ke Nama
-print(U.pktIdToName(0x0004)) -- "PlaceBlockPacket"
-print(U.pktIdToHex(4))       -- "0x0004"
+U.formatTime(3665)            -- "01:01:05"
+U.pktIdToName(0x0004)         -- "PlaceBlockPacket"
+U.pktIdToHex(4)               -- "0x0004"
+U.color32ToColor3(0xFF8800)   -- Color3
 ```
 
 ---
 
-## 15. Studi Kasus Proyek Nyata
-
-### Kasus 1: Auto-Harvest & Replant Bot Cerdas
-Bot otomatis mencari pohon matang terdekat, berjalan menghindari tembok via A* (Method 2), memanen pohon, dan menanam ulang bibit.
+## Contoh Proyek: Auto-Farm Bot Lengkap
 
 ```lua
-local NX = require(game.ReplicatedStorage.NXroENinD_DPcKage)
+-- Paste loadstring, lalu ini di script terpisah:
 NX.Init({ SmoothBuf = true })
 
-local function HarvestCycle()
-    -- 1. Cari pohon yang sudah siap panen (growth == 7)
-    local readyTrees = NX.FindTiles(function(t)
-        return t:isTree() and t.growth >= 7
-    end)
+local function farmCycle()
+    -- 1. Cari pohon matang
+    local trees = NX.FindTiles(function(t) return t:isTree() and t.growth >= 7 end)
+    if #trees == 0 then return end
 
-    if #readyTrees == 0 then
-        NX.ConsoleMsg("Belum ada pohon matang. Menunggu...", "gray")
-        return
-    end
+    local t = trees[1]
 
-    local target = readyTrees[1]
-    NX.ConsoleMsg(string.format("Menuju pohon di (%d, %d)...", target.x, target.y), "cyan")
+    -- 2. Navigasi natural ke pohon (hindari tembok)
+    NX.FindPath(t.x, t.y, 2, function(ok)
+        if not ok then return end
 
-    -- 2. Jalan natural menghindari balok solid (Method 2)
-    NX.FindPath(target.x, target.y, 2, function(arrived)
-        if not arrived then return end
-
-        -- 3. Hancurkan / Panen pohon
-        NX.SendPkt("BreakBlockPacket", { x = target.x, y = target.y })
-
-        -- 4. Tanam kembali setelah 0.2 detik jika punya seed di inventory
-        NX.After(0.2, function()
-            local seed = NX.FindItem("Seed")
-            if seed and seed.count > 0 then
-                NX.SendPkt("UseItemPacket", { itemId = seed.id, x = target.x, y = target.y })
-                NX.ConsoleMsg("Pohon dipanen dan ditanam ulang!", "green")
-            end
-        end)
+        -- 3. Panen + tanam ulang dalam 1 chain
+        NX.SendChain({
+            { "BreakBlockPacket", { x = t.x, y = t.y }, 0.2 },
+            { "UseItemPacket",    { itemId = NX.FindItem("Seed") and NX.FindItem("Seed").id or 18,
+                                    x = t.x, y = t.y } }
+        })
     end)
 end
 
--- Jalankan pengecekan setiap 4 detik:
-local farmLoop = NX.Every(4.0, HarvestCycle)
-```
+-- Jalankan setiap 5 detik
+local loop = NX.Every(5, farmCycle)
 
----
-
-### Kasus 2: High-Speed Controlled Packet Spammer Macro
-Contoh lengkap mengirim packet aksi berkecepatan tinggi dengan jeda acak (micro-jitter) dan kontrol batasan rate server:
-
-```lua
-local NX = require(game.ReplicatedStorage.NXroENinD_DPcKage)
-NX.Init({ SmoothBuf = true })
-
--- Siapkan antrean spammer
-local isSpamming = true
-local startX, startY = 10, 20
-local currentX = startX
-
-NX.ConsoleMsg("Memulai Controlled Spammer Macro...", "green")
-
--- Worker Loop dengan jeda 0.04 detik + random jitter
-task.spawn(function()
-    while isSpamming do
-        -- Kirim packet aksi penempatan balok
-        NX.SendPkt("PlaceBlockPacket", {
-            x = currentX,
-            y = startY,
-            itemId = 2 -- Dirt Block
-        })
-
-        currentX += 1
-        if currentX > startX + 20 then
-            currentX = startX
-        end
-
-        -- Jeda dinamis acak (35ms - 45ms)
-        local jitter = (math.random() - 0.5) * 0.010
-        task.wait(0.04 + jitter)
-    end
-end)
-
--- Hentikan otomatis setelah 8 detik:
-NX.After(8.0, function()
-    isSpamming = false
-    NX.ConsoleMsg("Spammer selesai dihentikan dengan aman.", "yellow")
+-- Hentikan setelah 30 menit
+NX.After(1800, function()
+    NX.Cancel(loop)
+    NX.ConsoleMsg("Farm bot dihentikan.", "yellow")
 end)
 ```
 
 ---
 
-*NXroENinD_DPcKage — Dokumentasi Resmi API & Panduan Implementasi Lengkap.*
+## Referensi Packet ID
+
+| ID | Nama | Arah | Payload |
+|:---:|:---|:---:|:---|
+| `0x0001` | InputPacket | C→S | `{action:u8, state:bool, position:vec3}` |
+| `0x0002` | MovementPacket | C→S | `{position:vec3, velocity:vec3, rotation:f32}` |
+| `0x0003` | ChatPacket | Bi | `{message:string, channel:u8}` |
+| `0x0004` | PlaceBlockPacket | C→S | `{x:i32, y:i32, itemId:u16}` |
+| `0x0005` | BreakBlockPacket | C→S | `{x:i32, y:i32}` |
+| `0x0006` | DropItemPacket | C→S | `{itemId:u16, count:u16}` |
+| `0x0007` | CollectItemPacket | C→S | `{objectId:u32}` |
+| `0x0008` | WearItemPacket | C→S | `{itemId:u16}` |
+| `0x0009` | RemoveItemPacket | C→S | `{itemId:u16}` |
+| `0x000A` | TrashItemPacket | C→S | `{itemId:u16, count:u16}` |
+| `0x000B` | UseItemPacket | C→S | `{itemId:u16, x:i32, y:i32}` |
+| `0x000C` | EnterDoorPacket | C→S | `{x:i32, y:i32}` |
+| `0x000D` | WorldRequestPacket | C→S | `{worldName:string}` |
+| `0x000E` | WorldDataPacket | S→C | `{worldData:buff}` |
+| `0x000F` | TileUpdatePacket | S→C | `{x:i32, y:i32, fg:u16, bg:u16, flags:u32}` |
+| `0x0010` | InventoryUpdatePacket | S→C | `{items:array<{id,count}>}` |
+| `0x0011` | PlayerJoinPacket | S→C | `{userId:u32, name:string, position:vec3}` |
+| `0x0012` | PlayerLeavePacket | S→C | `{userId:u32}` |
+| `0x0013` | PlayerUpdatePacket | S→C | `{userId:u32, position:vec3, rotation:f32, anim:u8}` |
+| `0x0014` | ConsoleMessagePacket | S→C | `{text:string, color:u32}` |
+| `0x0015` | DialogPacket | S→C | `{dialogType:u8, title:string, body:string}` |
+| `0x0016` | TradeRequestPacket | Bi | `{targetUserId:u32}` |
+| `0x0017` | TradeUpdatePacket | Bi | `{items:array<{id,count}>, confirmed:bool}` |
+| `0x0018` | PingPacket | Bi | `{timestamp:f64}` |
+| `0x0019` | SyncClockPacket | S→C | `{serverTime:f64}` |
+| `0x001A` | AdminCommandPacket | C→S | `{command:string, args:string}` |
+| `0x001B` | NpcInteractPacket | C→S | `{npcId:u32, option:u8}` |
+| `0x001C` | CraftPacket | C→S | `{recipeId:u16}` |
+| `0x001D` | BuyPacket | C→S | `{shopId:u16, itemId:u16, count:u16}` |
+| `0x001E` | SellPacket | C→S | `{shopId:u16, itemId:u16, count:u16}` |
+| `0x001F` | SignEditPacket | C→S | `{x:i32, y:i32, text:string}` |
+| `0x0020` | LockPacket | C→S | `{x:i32, y:i32, action:u8}` |
+| `0x0021` | FriendPacket | C→S | `{targetUserId:u32, action:u8}` |
+| `0x0022` | EmotePacket | C→S | `{emoteId:u8}` |
+| `0x0023` | RespawnPacket | C→S | `{}` |
+| `0x0024` | GrowthUpdatePacket | S→C | `{x:i32, y:i32, stage:u8}` |
+| `0x0025` | WeatherPacket | S→C | `{weatherType:u8, intensity:f32}` |
+| `0x0026` | EffectPacket | S→C | `{effectType:u8, position:vec3, data:u32}` |
+| `0x0027` | SoundPacket | S→C | `{soundId:u16, position:vec3, volume:f32}` |
+
+*Channel Unreliable: 0x0002, 0x0013, 0x0018 — Semua lain Reliable.*
+
+---
+
+*NXroENinD_DPcKage v3.1.0 — https://github.com/Mytzcodes/Gbxzcf0x2993HsFDj1*
