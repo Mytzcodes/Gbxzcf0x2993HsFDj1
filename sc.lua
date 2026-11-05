@@ -1,5 +1,5 @@
 --[[
-    StructScope v2.0  -  Struct Debugger untuk ByteNet (FLUENT UI)
+    StructScope v1.0  -  Struct Debugger untuk ByteNet (LINORIA UI)
     PASIF: hanya membaca / merekam. Tidak mengirim, mengubah, atau memutar ulang packet.
 
     Tiga sumber informasi struct per packet:
@@ -10,8 +10,8 @@
                     Menampilkan tipe, wajib/opsional, rentang angka, panjang, contoh nilai.
       3) TEBAKAN  : definisi ByteNet.struct({...}) yang dibuat dari data OBSERVED.
 
-    Viewer terintegrasi sebagai tab Fluent dengan fitur Copy / Save.
-    Seluruh kontrol antarmuka menggunakan Fluent UI dan ikon Lucide.
+    Viewer: panel teks (bisa digeser) dengan tombol Copy / Save.
+    Menu Linoria dikontrol lewat bar kecil di atas layar (tanpa shortcut keyboard).
 ]]
 
 ------------------------------------------------------------------
@@ -25,6 +25,7 @@ local CFG = {
 	MoveCap    = 6,      -- maks packet movement dicatat per detik (0 = tanpa batas)
 	TextLimit  = 15000,  -- batas karakter yang ditampilkan di viewer (Copy/Save tetap penuh)
 	Ascii      = true,   -- ganti karakter non-ASCII jadi '?' (cegah huruf kotak)
+	MenuKey    = "RightShift",
 }
 
 ------------------------------------------------------------------
@@ -33,6 +34,7 @@ local CFG = {
 local Players           = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local UserInputService  = game:GetService("UserInputService")
+local CoreGui           = game:GetService("CoreGui")
 local LocalPlayer       = Players.LocalPlayer
 
 if getgenv and getgenv().__StructScopeUnload then
@@ -40,14 +42,14 @@ if getgenv and getgenv().__StructScopeUnload then
 end
 
 ------------------------------------------------------------------
--- LOAD FLUENT UI
+-- LOAD LINORIA
 ------------------------------------------------------------------
-local FLUENT_URL = "https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"
-local okUI, Fluent = pcall(function()
-	return loadstring(game:HttpGet(FLUENT_URL))()
+local REPO = "https://raw.githubusercontent.com/violin-suzutsuki/LinoriaLib/main/"
+local okLib, Library = pcall(function()
+	return loadstring(game:HttpGet(REPO .. "Library.lua"))()
 end)
-if not okUI or type(Fluent) ~= "table" then
-	warn("[StructScope] Gagal memuat Fluent UI: " .. tostring(Fluent))
+if not okLib or type(Library) ~= "table" then
+	warn("[StructScope] Gagal memuat Linoria: " .. tostring(Library))
 	return
 end
 
@@ -58,13 +60,7 @@ local conns, running = {}, true
 local function track(c) conns[#conns + 1] = c return c end
 
 local function notify(text, t)
-	pcall(function()
-		Fluent:Notify({
-			Title = "StructScope",
-			Content = tostring(text),
-			Duration = t or 3,
-		})
-	end)
+	pcall(function() Library:Notify(text, t or 3) end)
 end
 
 local function clip(text)
@@ -1109,37 +1105,178 @@ local function render()
 end
 
 ------------------------------------------------------------------
--- VIEWER STATE (rendered inside the Fluent Viewer tab)
+-- VIEWER (panel teks, bisa digeser)
 ------------------------------------------------------------------
-local Window, Tabs, TabList, selectTab
-local Viewer = { full = "", title = "", visible = false, content = nil }
+local Viewer = { full = "", title = "" }
+do
+	local parent
+	if gethui then
+		local ok, h = pcall(gethui)
+		if ok then parent = h end
+	end
+	parent = parent or (pcall(function() return CoreGui.Name end) and CoreGui) or LocalPlayer:WaitForChild("PlayerGui")
 
-function Viewer.set(text, ttl)
-	text = CFG.Ascii and ascii(text) or text
-	Viewer.full = text
-	Viewer.title = ttl or ""
-	if Viewer.content then
-		local shown = text
-		if #shown > CFG.TextLimit then
-			shown = shown:sub(1, CFG.TextLimit)
-				.. ("\n\n... Output dipotong; total %d karakter. Gunakan Copy atau Save untuk teks penuh"):format(#text)
+	local gui = Instance.new("ScreenGui")
+	gui.Name = "StructScopeViewer"
+	gui.ResetOnSpawn = false
+	gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+	gui.DisplayOrder = 999
+	gui.Enabled = false
+	gui.Parent = parent
+	Viewer.gui = gui
+
+	local function corner(o, r)
+		local c = Instance.new("UICorner")
+		c.CornerRadius = UDim.new(0, r or 6)
+		c.Parent = o
+	end
+
+	local main = Instance.new("Frame")
+	main.Size = UDim2.fromOffset(470, 300)
+	main.Position = UDim2.new(1, -480, 1, -310)
+	main.BackgroundColor3 = Color3.fromRGB(22, 22, 28)
+	main.BorderSizePixel = 0
+	main.Parent = gui
+	corner(main, 8)
+
+	local bar = Instance.new("Frame")
+	bar.Size = UDim2.new(1, 0, 0, 30)
+	bar.BackgroundColor3 = Color3.fromRGB(32, 32, 42)
+	bar.BorderSizePixel = 0
+	bar.Parent = main
+	corner(bar, 8)
+
+	local title = Instance.new("TextLabel")
+	title.BackgroundTransparency = 1
+	title.Size = UDim2.new(1, -90, 1, 0)
+	title.Position = UDim2.fromOffset(10, 0)
+	title.Font = Enum.Font.Code
+	title.TextSize = 13
+	title.TextColor3 = Color3.fromRGB(235, 235, 245)
+	title.TextXAlignment = Enum.TextXAlignment.Left
+	title.TextTruncate = Enum.TextTruncate.AtEnd
+	title.Text = "StructScope Viewer"
+	title.Parent = bar
+
+	local body = Instance.new("Frame")
+	body.Size = UDim2.new(1, 0, 1, -30)
+	body.Position = UDim2.fromOffset(0, 30)
+	body.BackgroundTransparency = 1
+	body.Parent = main
+
+	local function barBtn(text, x, color, cb)
+		local b = Instance.new("TextButton")
+		b.Size = UDim2.fromOffset(26, 20)
+		b.Position = UDim2.new(1, x, 0.5, -10)
+		b.BackgroundColor3 = color
+		b.Text = text
+		b.Font = Enum.Font.Code
+		b.TextSize = 13
+		b.TextColor3 = Color3.new(1, 1, 1)
+		b.Parent = bar
+		corner(b, 4)
+		track(b.MouseButton1Click:Connect(cb))
+	end
+	local minimized = false
+	barBtn("-", -58, Color3.fromRGB(90, 90, 110), function()
+		minimized = not minimized
+		body.Visible = not minimized
+		main.Size = minimized and UDim2.fromOffset(470, 30) or UDim2.fromOffset(470, 300)
+	end)
+	barBtn("X", -30, Color3.fromRGB(190, 60, 60), function() gui.Enabled = false end)
+
+	local dragging, dragStart, startPos
+	track(bar.InputBegan:Connect(function(i)
+		if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then
+			dragging, dragStart, startPos = true, i.Position, main.Position
 		end
-		pcall(function()
-			Viewer.content:SetTitle("Viewer - " .. (Viewer.title ~= "" and Viewer.title or "Output"))
-			Viewer.content:SetDesc(shown)
-		end)
-	end
-end
+	end))
+	track(UserInputService.InputChanged:Connect(function(i)
+		if dragging and (i.UserInputType == Enum.UserInputType.MouseMovement or i.UserInputType == Enum.UserInputType.Touch) then
+			local d = i.Position - dragStart
+			main.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X, startPos.Y.Scale, startPos.Y.Offset + d.Y)
+		end
+	end))
+	track(UserInputService.InputEnded:Connect(function(i)
+		if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then
+			dragging = false
+		end
+	end))
 
-function Viewer.show(v)
-	Viewer.visible = v and true or false
-	if selectTab then
-		selectTab(Viewer.visible and 4 or 1)
-	end
-end
+	local scroll = Instance.new("ScrollingFrame")
+	scroll.Size = UDim2.new(1, -12, 1, -48)
+	scroll.Position = UDim2.fromOffset(6, 6)
+	scroll.BackgroundColor3 = Color3.fromRGB(14, 14, 20)
+	scroll.BorderSizePixel = 0
+	scroll.ScrollBarThickness = 6
+	scroll.CanvasSize = UDim2.new()
+	scroll.AutomaticCanvasSize = Enum.AutomaticSize.XY
+	scroll.Parent = body
+	corner(scroll, 6)
 
-function Viewer.toggle()
-	Viewer.show(not Viewer.visible)
+	local box = Instance.new("TextBox")
+	box.Size = UDim2.new(0, 0, 0, 0)
+	box.AutomaticSize = Enum.AutomaticSize.XY
+	box.Position = UDim2.fromOffset(4, 4)
+	box.BackgroundTransparency = 1
+	box.MultiLine = true
+	box.ClearTextOnFocus = false
+	box.TextEditable = false
+	box.TextWrapped = false
+	box.TextXAlignment = Enum.TextXAlignment.Left
+	box.TextYAlignment = Enum.TextYAlignment.Top
+	box.Font = Enum.Font.Code
+	box.TextSize = 12
+	box.TextColor3 = Color3.fromRGB(215, 222, 240)
+	box.Text = ""
+	box.Parent = scroll
+	local minSize = Instance.new("UISizeConstraint")
+	minSize.MinSize = Vector2.new(440, 220)
+	minSize.Parent = box
+
+	local row = Instance.new("Frame")
+	row.Size = UDim2.new(1, -12, 0, 28)
+	row.Position = UDim2.new(0, 6, 1, -34)
+	row.BackgroundTransparency = 1
+	row.Parent = body
+	local layout = Instance.new("UIListLayout")
+	layout.FillDirection = Enum.FillDirection.Horizontal
+	layout.Padding = UDim.new(0, 6)
+	layout.Parent = row
+
+	function Viewer.addButton(text, color, cb)
+		local b = Instance.new("TextButton")
+		b.Size = UDim2.fromOffset(90, 28)
+		b.BackgroundColor3 = color
+		b.Text = text
+		b.Font = Enum.Font.Code
+		b.TextSize = 12
+		b.TextColor3 = Color3.new(1, 1, 1)
+		b.Parent = row
+		corner(b, 5)
+		track(b.MouseButton1Click:Connect(cb))
+	end
+
+	function Viewer.set(text, ttl)
+		text = CFG.Ascii and ascii(text) or text
+		Viewer.full = text
+		Viewer.title = ttl or ""
+		title.Text = "StructScope - " .. (CFG.Ascii and ascii(ttl or "") or (ttl or ""))
+		if #text > CFG.TextLimit then
+			box.Text = text:sub(1, CFG.TextLimit) .. ("\n\n... [dipotong, total %d karakter. Pakai Copy / Save untuk teks penuh]"):format(#text)
+		else
+			box.Text = text
+		end
+	end
+	function Viewer.show(v) gui.Enabled = v end
+	function Viewer.applyTheme(t)
+		main.BackgroundColor3 = t.Main
+		bar.BackgroundColor3 = t.Background
+		scroll.BackgroundColor3 = t.View
+		box.TextColor3 = t.Font
+		title.TextColor3 = t.Font
+	end
+	function Viewer.toggle() gui.Enabled = not gui.Enabled end
 end
 
 ------------------------------------------------------------------
@@ -1196,8 +1333,8 @@ local function refreshLists()
 			names[#names + 1] = e.short
 		end
 	end
-	if #labels == 0 then labels = { "Belum ada packet" } end
-	if #names == 0 then names = { "Belum ada packet" } end
+	if #labels == 0 then labels = { "(tidak ada packet)" } end
+	if #names == 0 then names = { "(tidak ada packet)" } end
 	if ddPacket then pcall(function() ddPacket:SetValues(labels) end) end
 	if ddMute then pcall(function() ddMute:SetValues(names) end) end
 	if not state.selected and labelMap[labels[1]] then
@@ -1246,137 +1383,28 @@ local function clearAll()
 end
 
 ------------------------------------------------------------------
--- FLUENT UI
+-- LINORIA UI
 ------------------------------------------------------------------
-Window = Fluent:CreateWindow({
+local Window = Library:CreateWindow({
 	Title = "StructScope",
-	SubTitle = "Passive ByteNet Struct Debugger",
-	TabWidth = 132,
-	Size = UDim2.fromOffset(540, 400),
-	Acrylic = false,
-	Theme = "Dark",
-	MinimizeKey = Enum.KeyCode.RightShift,
+	Center = true,
+	AutoShow = true,
+	TabPadding = 6,
+	MenuFadeTime = 0.15,
+	Size = UDim2.fromOffset(470, 330),
 })
 
-Tabs = {
-	Main   = Window:AddTab({ Title = "Utama",  Icon = "activity" }),
-	Log    = Window:AddTab({ Title = "Log",    Icon = "list" }),
-	Export = Window:AddTab({ Title = "Export", Icon = "clipboard" }),
-	Viewer = Window:AddTab({ Title = "Viewer", Icon = "file-text" }),
-	Theme  = Window:AddTab({ Title = "Tema",   Icon = "palette" }),
-	Info   = Window:AddTab({ Title = "Info",   Icon = "info" }),
+local Tabs = {
+	Main  = Window:AddTab("Utama"),
+	Log   = Window:AddTab("Log"),
+	Copy  = Window:AddTab("Copy"),
+	Theme = Window:AddTab("Tema"),
+	Info  = Window:AddTab("Info"),
 }
-TabList = { Tabs.Main, Tabs.Log, Tabs.Export, Tabs.Viewer, Tabs.Theme, Tabs.Info }
-
--- Fluent 1.1.0 currently exposes SelectTab, but its implementation selects
--- the first tab regardless of the supplied index. This helper switches the
--- public tab containers and keeps the visible title/selection styling in sync.
-selectTab = function(index)
-	index = math.clamp(tonumber(index) or 1, 1, #TabList)
-	for i, tab in ipairs(TabList) do
-		local selected = i == index
-		tab.ContainerFrame.Visible = selected
-		tab.Selected = selected
-		pcall(function() tab.SetTransparency(selected and 0.89 or 1) end)
-	end
-	Window.TabDisplay.Text = TabList[index].Name
-	-- Move Fluent's own tab indicator when switching tabs from script actions.
-	pcall(function()
-		local selector = Window.TabHolder.Parent:FindFirstChild("Frame")
-		if selector then
-			local tabFrame = TabList[index].Frame
-			local y = tabFrame.AbsolutePosition.Y - Window.TabHolder.AbsolutePosition.Y
-			selector.Position = UDim2.fromOffset(0, y + 17)
-			selector.Size = UDim2.fromOffset(4, 16)
-		end
-	end)
-	Viewer.visible = index == 4
-end
-pcall(function() Window:SelectTab(1) end)
-selectTab(1)
-
-------------------------------------------------------------------
--- FLUENT LUCIDE FLOATING LAUNCHER
--- Uses the Fluent GUI and its bundled Lucide asset; no second UI library.
-------------------------------------------------------------------
-local launcherButton, launcherStroke
-local function updateLauncherTheme(name)
-	local styles = {
-		Dark = { bg = Color3.fromRGB(30, 34, 44), accent = Color3.fromRGB(76, 194, 255), icon = Color3.fromRGB(245, 248, 255) },
-		Darker = { bg = Color3.fromRGB(18, 20, 28), accent = Color3.fromRGB(100, 130, 190), icon = Color3.fromRGB(245, 248, 255) },
-		Light = { bg = Color3.fromRGB(242, 245, 250), accent = Color3.fromRGB(35, 120, 205), icon = Color3.fromRGB(35, 45, 60) },
-		Aqua = { bg = Color3.fromRGB(20, 44, 52), accent = Color3.fromRGB(0, 205, 195), icon = Color3.fromRGB(235, 255, 255) },
-		Amethyst = { bg = Color3.fromRGB(42, 30, 58), accent = Color3.fromRGB(180, 120, 255), icon = Color3.fromRGB(250, 240, 255) },
-		Rose = { bg = Color3.fromRGB(52, 30, 40), accent = Color3.fromRGB(255, 130, 165), icon = Color3.fromRGB(255, 240, 245) },
-	}
-	local style = styles[name] or styles.Dark
-	if launcherButton then
-		launcherButton.BackgroundColor3 = style.bg
-		launcherButton.ImageColor3 = style.icon
-	end
-	if launcherStroke then launcherStroke.Color = style.accent end
-end
-
-do
-	local iconAsset = Fluent:GetIcon("menu")
-	launcherButton = Instance.new("ImageButton")
-	launcherButton.Name = "StructScopeFluentLauncher"
-	launcherButton.Size = UDim2.fromOffset(42, 42)
-	launcherButton.Position = UDim2.new(0, 14, 0.55, -21)
-	launcherButton.BackgroundColor3 = Color3.fromRGB(30, 34, 44)
-	launcherButton.BorderSizePixel = 0
-	launcherButton.AutoButtonColor = true
-	launcherButton.Image = iconAsset or ""
-	launcherButton.ImageColor3 = Color3.fromRGB(245, 248, 255)
-	launcherButton.ScaleType = Enum.ScaleType.Fit
-	launcherButton.ZIndex = 100
-	launcherButton.Parent = Fluent.GUI
-
-	local corner = Instance.new("UICorner")
-	corner.CornerRadius = UDim.new(0, 13)
-	corner.Parent = launcherButton
-	launcherStroke = Instance.new("UIStroke")
-	launcherStroke.Color = Color3.fromRGB(76, 194, 255)
-	launcherStroke.Thickness = 1.4
-	launcherStroke.Parent = launcherButton
-
-	local dragging, dragStart, startPosition = false, nil, nil
-	local moved = false
-	launcherButton.InputBegan:Connect(function(input)
-		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-			dragging = true
-			moved = false
-			dragStart = input.Position
-			startPosition = launcherButton.Position
-		end
-	end)
-	track(UserInputService.InputChanged:Connect(function(input)
-		if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
-			local delta = input.Position - dragStart
-			if delta.Magnitude > 5 then moved = true end
-			if moved then
-				local camera = workspace.CurrentCamera
-				local viewport = camera and camera.ViewportSize or Vector2.new(800, 600)
-				local baseX = startPosition.X.Scale * viewport.X + startPosition.X.Offset
-				local baseY = startPosition.Y.Scale * viewport.Y + startPosition.Y.Offset
-				local x = math.clamp(baseX + delta.X, 0, math.max(0, viewport.X - 42))
-				local y = math.clamp(baseY + delta.Y, 0, math.max(0, viewport.Y - 42))
-				launcherButton.Position = UDim2.fromOffset(x, y)
-			end
-		end
-	end))
-	track(UserInputService.InputEnded:Connect(function(input)
-		if dragging and (input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch) then
-			dragging = false
-			if not moved then Window:Minimize() end
-			moved = false
-		end
-	end))
-end
 
 local function doCopy(text, label)
 	if CFG.Ascii then text = ascii(text) end
-	notify(clip(text) and ("%s disalin (%d karakter).":format(label, #text)) or "setclipboard tidak didukung executor.", 3)
+	notify(clip(text) and ("%s disalin (%d karakter)."):format(label, #text) or "setclipboard tidak didukung executor.", 3)
 end
 
 local function doSave(prefix, text, ext)
@@ -1403,24 +1431,18 @@ end
 ------------------------------------------------------------------
 -- TAB UTAMA
 ------------------------------------------------------------------
-local MainControl = Tabs.Main:AddSection("Kontrol")
-local recToggle = MainControl:AddToggle("SS_Rec", {
-	Title = "Rekam Packet (pasif)",
-	Description = "Hanya mengamati data IN dan OUT; tidak mengirim atau mengubah packet.",
+local GBControl = Tabs.Main:AddLeftGroupbox("Kontrol")
+local recToggle = GBControl:AddToggle("SS_Rec", {
+	Text = "Rekam Packet (pasif)",
 	Default = false,
+	Tooltip = "Scan packet, pasang listener IN dan hook OUT. Hanya merekam.",
 	Callback = function(v)
-		if v then
-			startSpy()
-		else
-			stopSpy()
-			notify("Rekam dihentikan. Data yang sudah terkumpul tetap tersimpan.", 3)
-		end
+		if v then startSpy() else stopSpy() notify("Rekam dihentikan (data tetap tersimpan).", 3) end
 	end,
 })
-MainControl:AddButton({
-	Title = "Scan Ulang Packet",
-	Description = "Cari ulang objek packet ByteNet yang tersedia.",
-	Callback = function()
+GBControl:AddButton({
+	Text = "Scan Ulang Packet",
+	Func = function()
 		task.spawn(function()
 			local n = scanPackets()
 			if state.active then
@@ -1431,40 +1453,41 @@ MainControl:AddButton({
 		end)
 	end,
 })
-MainControl:AddButton({
-	Title = "Buka Viewer",
-	Description = "Tampilkan hasil struct pada tab Viewer.",
-	Callback = showView,
+GBControl:AddButton({
+	Text = "Buka / Tutup Viewer",
+	Func = function()
+		if Viewer.gui.Enabled then Viewer.show(false) else showView() end
+	end,
 })
-MainControl:AddButton({
-	Title = "Minimize Interface",
-	Description = "Sembunyikan jendela. Buka kembali dengan RightShift.",
-	Callback = function() Window:Minimize() end,
+GBControl:AddButton({
+	Text = "Sembunyikan Menu",
+	Tooltip = "Munculkan lagi lewat tombol Menu di bar kecil",
+	Func = function() pcall(function() Library:Toggle() end) end,
 })
-MainControl:AddButton({
-	Title = "Clear Semua Data",
-	Description = "Hapus seluruh sampel, schema, feed, log, dan chat.",
-	Callback = function() clearAll() notify("Semua data dibersihkan.", 2) end,
+GBControl:AddButton({
+	Text = "Clear Semua Data",
+	Func = function() clearAll() notify("Data packet dibersihkan.", 2) end,
+	DoubleClick = true,
 })
-statusLabel = Tabs.Main:AddParagraph({ Title = "Status", Content = "Status: belum aktif" })
+statusLabel = GBControl:AddLabel("Status: belum aktif", true)
 
-local PickSection = Tabs.Main:AddSection("Packet Explorer")
-PickSection:AddInput("SS_Filter", {
-	Title = "Filter nama atau ID",
+local GBPick = Tabs.Main:AddRightGroupbox("Lihat Struct")
+GBPick:AddInput("SS_Filter", {
 	Default = "",
 	Numeric = false,
 	Finished = false,
-	Placeholder = "Contoh: act atau 12",
+	Text = "Filter nama / ID",
+	Placeholder = "contoh: act atau 12",
 	Callback = function(t)
 		state.filter = (t or ""):lower()
 		refreshLists()
 	end,
 })
-ddPacket = PickSection:AddDropdown("SS_Packet", {
-	Title = "Packet",
-	Values = { "Belum ada packet" },
-	Default = "Belum ada packet",
+ddPacket = GBPick:AddDropdown("SS_Packet", {
+	Values = { "(scan dulu)" },
+	Default = 1,
 	Multi = false,
+	Text = "Packet",
 	Callback = function(v)
 		local e = labelMap[v]
 		if e then
@@ -1473,11 +1496,11 @@ ddPacket = PickSection:AddDropdown("SS_Packet", {
 		end
 	end,
 })
-local modeDD = PickSection:AddDropdown("SS_Mode", {
-	Title = "Format Viewer",
+local modeDD = GBPick:AddDropdown("SS_Mode", {
 	Values = MODES,
-	Default = MODES[1],
+	Default = 1,
 	Multi = false,
+	Text = "Tampilan",
 	Callback = function(v)
 		for i, name in ipairs(MODES) do
 			if name == v then state.view = i break end
@@ -1485,8 +1508,11 @@ local modeDD = PickSection:AddDropdown("SS_Mode", {
 		state.dirty = true
 	end,
 })
-PickSection:AddButton({ Title = "Tampilkan Struct", Description = "Render packet yang dipilih.", Callback = showView })
+GBPick:AddButton({ Text = "Tampilkan di Viewer", Func = showView })
 
+------------------------------------------------------------------
+-- TAB LOG
+------------------------------------------------------------------
 local function jumpView(idx)
 	state.view = idx
 	pcall(function() modeDD:SetValue(MODES[idx]) end)
@@ -1494,71 +1520,70 @@ local function jumpView(idx)
 	showView()
 end
 
-------------------------------------------------------------------
--- TAB LOG
-------------------------------------------------------------------
-local FilterSection = Tabs.Log:AddSection("Filter Log")
-FilterSection:AddDropdown("SS_LogDir", {
-	Title = "Arah Packet",
+local GBFilter = Tabs.Log:AddLeftGroupbox("Filter Log")
+GBFilter:AddDropdown("SS_LogDir", {
 	Values = { "Semua", "IN", "OUT" },
-	Default = "Semua",
+	Default = 1,
 	Multi = false,
+	Text = "Arah (IN server ke client)",
 	Callback = function(v) logCfg.dir = v state.dirty = true end,
 })
-FilterSection:AddDropdown("SS_LogCat", {
-	Title = "Kategori",
+GBFilter:AddDropdown("SS_LogCat", {
 	Values = { "Semua", "chat", "movement", "other" },
-	Default = "Semua",
+	Default = 1,
 	Multi = false,
+	Text = "Kategori",
 	Callback = function(v) logCfg.cat = v state.dirty = true end,
 })
-FilterSection:AddInput("SS_LogName", {
-	Title = "Filter nama atau ID packet",
+GBFilter:AddInput("SS_LogName", {
 	Default = "",
 	Numeric = false,
 	Finished = false,
-	Placeholder = "Contoh: chat atau note",
+	Text = "Filter nama / ID packet",
+	Placeholder = "contoh: chat atau note",
 	Callback = function(t) logCfg.name = (t or ""):lower() state.dirty = true end,
 })
-FilterSection:AddSlider("SS_LogLines", {
-	Title = "Jumlah baris di Viewer",
+GBFilter:AddSlider("SS_LogLines", {
+	Text = "Baris tampil di viewer",
 	Default = state.logLines,
 	Min = 10,
 	Max = 70,
 	Rounding = 0,
+	Compact = false,
 	Callback = function(v) state.logLines = v state.dirty = true end,
 })
-FilterSection:AddButton({ Title = "Lihat Log Packet", Callback = function() jumpView(7) end })
-FilterSection:AddButton({ Title = "Lihat Chat Log", Callback = function() jumpView(8) end })
+GBFilter:AddButton({ Text = "Lihat Log Packet di Viewer", Func = function() jumpView(7) end })
+GBFilter:AddButton({ Text = "Lihat Chat Log di Viewer", Func = function() jumpView(8) end })
 
-local CaptureSection = Tabs.Log:AddSection("Pengaturan Rekaman")
-CaptureSection:AddToggle("SS_Auto", {
-	Title = "Auto-refresh Viewer",
+local GBRec = Tabs.Log:AddRightGroupbox("Rekaman")
+GBRec:AddToggle("SS_Auto", {
+	Text = "Auto-refresh viewer",
 	Default = true,
 	Callback = function(v) state.auto = v end,
 })
-CaptureSection:AddSlider("SS_MoveCap", {
-	Title = "Batas Movement per Detik (0 = tanpa batas)",
+GBRec:AddSlider("SS_MoveCap", {
+	Text = "Movement maks /detik (0 = semua)",
 	Default = CFG.MoveCap,
 	Min = 0,
 	Max = 30,
 	Rounding = 0,
+	Compact = false,
 	Callback = function(v) CFG.MoveCap = v end,
 })
-CaptureSection:AddSlider("SS_MaxSamples", {
-	Title = "Maksimum Sampel per Packet",
+GBRec:AddSlider("SS_MaxSamples", {
+	Text = "Maks sampel per packet",
 	Default = CFG.MaxSamples,
 	Min = 3,
 	Max = 40,
 	Rounding = 0,
+	Compact = false,
 	Callback = function(v) CFG.MaxSamples = v end,
 })
-ddMute = CaptureSection:AddDropdown("SS_Mute", {
-	Title = "Mute Packet Spam",
-	Description = "Packet terpilih tetap dihitung tetapi tidak dicatat atau dipelajari.",
-	Values = { "Belum ada packet" },
+ddMute = GBRec:AddDropdown("SS_Mute", {
+	Values = { "(scan dulu)" },
 	Multi = true,
-	Default = {},
+	Text = "Mute packet spam",
+	Tooltip = "Packet yang dipilih tetap dihitung tapi tidak dicatat / dipelajari.",
 	Callback = function(v)
 		table.clear(muted)
 		if type(v) == "table" then
@@ -1568,157 +1593,330 @@ ddMute = CaptureSection:AddDropdown("SS_Mute", {
 		end
 	end,
 })
-CaptureSection:AddToggle("SS_Ascii", {
-	Title = "ASCII-safe",
-	Description = "Ganti karakter non-ASCII agar aman ditampilkan di output.",
+GBRec:AddToggle("SS_Ascii", {
+	Text = "ASCII-safe (cegah huruf kotak)",
 	Default = CFG.Ascii,
 	Callback = function(v) CFG.Ascii = v state.dirty = true end,
 })
-CaptureSection:AddButton({
-	Title = "Hapus Log dan Chat",
-	Description = "Bersihkan log packet dan chat tanpa menghapus schema.",
-	Callback = function()
+GBRec:AddButton({
+	Text = "Hapus Log dan Chat Saja",
+	Func = function()
 		table.clear(Store.log)
 		table.clear(Store.chat)
 		logCfg.seq, logCfg.dropped = 0, 0
 		state.dirty = true
 		notify("Log dan chat dibersihkan.", 2)
 	end,
+	DoubleClick = true,
 })
 
 ------------------------------------------------------------------
--- TAB EXPORT
+-- TAB COPY (fitur utama)
 ------------------------------------------------------------------
-local CopySection = Tabs.Export:AddSection("Clipboard")
-CopySection:AddButton({ Title = "Copy Tampilan Saat Ini", Callback = function() doCopy(currentText(), "Tampilan") end })
-CopySection:AddButton({
-	Title = "Copy Table Log (Lua)",
-	Description = "Semua log packet yang sesuai filter.",
-	Callback = function() local value = logLua() if value then doCopy(value, "Table log") end end,
+local GBCopy = Tabs.Copy:AddLeftGroupbox("Copy ke Clipboard")
+GBCopy:AddButton({ Text = "Copy Tampilan Saat Ini", Func = function() doCopy(currentText(), "Tampilan") end })
+GBCopy:AddButton({
+	Text = "Copy Table Log (Lua)",
+	Tooltip = "Semua log packet sesuai filter di tab Log",
+	Func = function() local s = logLua() if s then doCopy(s, "Table log") end end,
 })
-CopySection:AddButton({ Title = "Copy Table Chat (Lua)", Callback = function() local value = chatLua() if value then doCopy(value, "Table chat") end end })
-CopySection:AddButton({
-	Title = "Copy Tabel Packet (Lua)",
-	Description = "Daftar ID, nama, jumlah, dan ringkasan struct.",
-	Callback = function() doCopy(registryLua(), "Tabel packet") end,
+GBCopy:AddButton({
+	Text = "Copy Table Chat (Lua)",
+	Func = function() local s = chatLua() if s then doCopy(s, "Table chat") end end,
 })
-CopySection:AddButton({
-	Title = "Copy Definisi ByteNet",
-	Description = "Definisi packet yang sedang dipilih.",
-	Callback = function()
-		if not state.selected then return notify("Pilih packet terlebih dahulu.", 3) end
+GBCopy:AddButton({
+	Text = "Copy Tabel Packet (Lua)",
+	Tooltip = "Daftar semua packet: id, nama, jumlah, struct",
+	Func = function() doCopy(registryLua(), "Tabel packet") end,
+})
+GBCopy:AddButton({
+	Text = "Copy Definisi ByteNet (terpilih)",
+	Func = function()
+		if not state.selected then return notify("Pilih packet dulu di tab Utama.", 3) end
 		doCopy(packetDefText(state.selected), "Definisi")
 	end,
 })
-CopySection:AddButton({ Title = "Copy Laporan Semua Packet", Callback = function() doCopy(allReport(), "Laporan") end })
+GBCopy:AddButton({ Text = "Copy Laporan SEMUA Packet", Func = function() doCopy(allReport(), "Laporan") end })
 
-local SaveSection = Tabs.Export:AddSection("Simpan ke File")
-SaveSection:AddButton({
-	Title = "Simpan Tampilan (.txt)",
-	Callback = function()
+local GBSave = Tabs.Copy:AddRightGroupbox("Simpan ke File")
+GBSave:AddButton({
+	Text = "Simpan Tampilan",
+	Func = function()
 		local text, title = currentText()
 		doSave(ascii(title or "view"):gsub("[^%w_%-]", "_"), text, "txt")
 	end,
 })
-SaveSection:AddButton({ Title = "Simpan Table Log (.lua)", Callback = function() local value = logLua() if value then doSave("packet_log", value, "lua") end end })
-SaveSection:AddButton({ Title = "Simpan Table Chat (.lua)", Callback = function() local value = chatLua() if value then doSave("chat_log", value, "lua") end end })
-SaveSection:AddButton({ Title = "Simpan Tabel Packet (.lua)", Callback = function() doSave("packet_table", registryLua(), "lua") end })
-SaveSection:AddButton({ Title = "Simpan Laporan Semua (.txt)", Callback = function() doSave("struct_report_" .. tostring(game.PlaceId), allReport(), "txt") end })
-
-------------------------------------------------------------------
--- TAB VIEWER
-------------------------------------------------------------------
-local ViewerSection = Tabs.Viewer:AddSection("Packet Output")
-Viewer.content = ViewerSection:AddParagraph({
-	Title = "Viewer - Menunggu Data",
-	Content = "Pilih packet di tab Utama, lalu tekan Tampilkan Struct.\n\nViewer ini menampilkan DECLARED, OBSERVED, TEBAKAN, dan sampel.",
+GBSave:AddButton({
+	Text = "Simpan Table Log (.lua)",
+	Func = function() local s = logLua() if s then doSave("packet_log", s, "lua") end end,
 })
-local ViewerActions = Tabs.Viewer:AddSection("Aksi Viewer")
-ViewerActions:AddButton({ Title = "Copy Output", Callback = function()
-	if Viewer.full == "" then return notify("Viewer masih kosong.", 2) end
-	doCopy(Viewer.full, "Output Viewer")
-end })
-ViewerActions:AddButton({ Title = "Save Output (.txt)", Callback = function()
-	if Viewer.full == "" then return notify("Viewer masih kosong.", 2) end
-	local name = ascii(Viewer.title ~= "" and Viewer.title or "view"):gsub("[^%w_%-]", "_")
-	doSave(name, Viewer.full, "txt")
-end })
-ViewerActions:AddButton({ Title = "Refresh Output", Callback = showView })
-ViewerActions:AddButton({ Title = "Kembali ke Utama", Callback = function() selectTab(1) end })
+GBSave:AddButton({
+	Text = "Simpan Table Chat (.lua)",
+	Func = function() local s = chatLua() if s then doSave("chat_log", s, "lua") end end,
+})
+GBSave:AddButton({ Text = "Simpan Tabel Packet (.lua)", Func = function() doSave("packet_table", registryLua(), "lua") end })
+GBSave:AddButton({
+	Text = "Simpan Laporan SEMUA",
+	Func = function() doSave("struct_report_" .. tostring(game.PlaceId), allReport(), "txt") end,
+})
 
--- Keep the Viewer refresh state synchronized when users select tabs directly.
-for index, tab in ipairs(TabList) do
-	track(tab.Frame.MouseButton1Click:Connect(function()
-		Viewer.visible = index == 4
+------------------------------------------------------------------
+-- BAR KONTROL KECIL (minimize / close tanpa shortcut)
+------------------------------------------------------------------
+local ControlBar = { btns = {} }
+do
+	local parent
+	if gethui then
+		local ok, h = pcall(gethui)
+		if ok then parent = h end
+	end
+	parent = parent or (pcall(function() return CoreGui.Name end) and CoreGui) or LocalPlayer:WaitForChild("PlayerGui")
+
+	local gui = Instance.new("ScreenGui")
+	gui.Name = "StructScopeBar"
+	gui.ResetOnSpawn = false
+	gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+	gui.DisplayOrder = 1000
+	gui.Parent = parent
+	ControlBar.gui = gui
+
+	local function corner(o, r)
+		local c = Instance.new("UICorner")
+		c.CornerRadius = UDim.new(0, r or 5)
+		c.Parent = o
+	end
+
+	local frame = Instance.new("Frame")
+	frame.Size = UDim2.fromOffset(236, 26)
+	frame.Position = UDim2.new(0.5, -118, 0, 6)
+	frame.BackgroundColor3 = Color3.fromRGB(24, 28, 34)
+	frame.BorderSizePixel = 0
+	frame.Parent = gui
+	corner(frame, 6)
+	local stroke = Instance.new("UIStroke")
+	stroke.Color = Color3.fromRGB(0, 170, 160)
+	stroke.Thickness = 1
+	stroke.Parent = frame
+	local pad = Instance.new("UIPadding")
+	pad.PaddingLeft = UDim.new(0, 4)
+	pad.Parent = frame
+	local layout = Instance.new("UIListLayout")
+	layout.FillDirection = Enum.FillDirection.Horizontal
+	layout.Padding = UDim.new(0, 4)
+	layout.VerticalAlignment = Enum.VerticalAlignment.Center
+	layout.Parent = frame
+
+	local function mk(text, w, cb)
+		local b = Instance.new("TextButton")
+		b.Size = UDim2.fromOffset(w, 20)
+		b.BackgroundColor3 = Color3.fromRGB(16, 19, 24)
+		b.BorderSizePixel = 0
+		b.Text = text
+		b.Font = Enum.Font.Code
+		b.TextSize = 12
+		b.TextColor3 = Color3.fromRGB(230, 236, 240)
+		b.Parent = frame
+		corner(b, 4)
+		track(b.MouseButton1Click:Connect(cb))
+		ControlBar.btns[#ControlBar.btns + 1] = b
+		return b
+	end
+
+	local collapsed, moved = false, false
+	local grip
+	local function setCollapsed(v)
+		collapsed = v
+		for _, b in ipairs(ControlBar.btns) do
+			if b ~= grip then b.Visible = not v end
+		end
+		frame.Size = v and UDim2.fromOffset(42, 26) or UDim2.fromOffset(236, 26)
+	end
+
+	grip = mk("SS", 30, function()
+		if moved then return end
+		if collapsed then setCollapsed(false) end
+	end)
+	mk("Menu", 40, function() pcall(function() Library:Toggle() end) end)
+	mk("View", 40, function()
+		if Viewer.gui.Enabled then Viewer.show(false) else showView() end
+	end)
+	local recBtn = mk("Rec OFF", 56, function()
+		pcall(function() recToggle:SetValue(not recToggle.Value) end)
+	end)
+	mk("-", 22, function() setCollapsed(true) end)
+	local xArmed = false
+	local xBtn
+	xBtn = mk("X", 22, function()
+		if not xArmed then
+			xArmed = true
+			xBtn.Text = "?"
+			notify("Klik X sekali lagi untuk menutup semua.", 3)
+			task.delay(3, function()
+				xArmed = false
+				pcall(function() xBtn.Text = "X" end)
+			end)
+			return
+		end
+		local fn = getgenv and getgenv().__StructScopeUnload
+		if fn then fn() else pcall(function() Library:Unload() end) end
+	end)
+
+	function ControlBar.setRec(on)
+		recBtn.Text = on and "REC ON" or "Rec OFF"
+	end
+	function ControlBar.applyTheme(t)
+		frame.BackgroundColor3 = t.Main
+		stroke.Color = t.Accent
+		for _, b in ipairs(ControlBar.btns) do
+			b.BackgroundColor3 = t.Background
+			b.TextColor3 = t.Font
+		end
+	end
+
+	local dragging, dragStart, startPos = false, nil, nil
+	local function beginDrag(i)
+		if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then
+			dragging, dragStart, startPos, moved = true, i.Position, frame.Position, false
+		end
+	end
+	track(frame.InputBegan:Connect(beginDrag))
+	track(grip.InputBegan:Connect(beginDrag))
+	track(UserInputService.InputChanged:Connect(function(i)
+		if dragging and (i.UserInputType == Enum.UserInputType.MouseMovement or i.UserInputType == Enum.UserInputType.Touch) then
+			local d = i.Position - dragStart
+			if d.Magnitude > 4 then moved = true end
+			frame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X, startPos.Y.Scale, startPos.Y.Offset + d.Y)
+		end
+	end))
+	track(UserInputService.InputEnded:Connect(function(i)
+		if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then
+			dragging = false
+		end
 	end))
 end
 
-------------------------------------------------------------------
--- TAB TEMA & SETTINGS
-------------------------------------------------------------------
-local THEME_ORDER = { "Dark", "Darker", "Light", "Aqua", "Amethyst", "Rose" }
+task.spawn(function()
+	while running do
+		pcall(ControlBar.setRec, state.active)
+		task.wait(0.4)
+	end
+end)
 
-local ThemeSection = Tabs.Theme:AddSection("Appearance")
-ThemeSection:AddDropdown("SS_Theme", {
-	Title = "Fluent Theme",
+------------------------------------------------------------------
+-- TEMA
+------------------------------------------------------------------
+local THEME_ORDER = { "Teal Gelap", "Midnight Biru", "Ungu Neon", "Hijau Terminal", "Abu Terang" }
+local THEMES = {
+	["Teal Gelap"] = {
+		Main = Color3.fromRGB(24, 28, 34), Background = Color3.fromRGB(16, 19, 24), Accent = Color3.fromRGB(0, 170, 160),
+		Outline = Color3.fromRGB(45, 52, 62), Font = Color3.fromRGB(230, 236, 240), View = Color3.fromRGB(12, 15, 20),
+	},
+	["Midnight Biru"] = {
+		Main = Color3.fromRGB(22, 26, 40), Background = Color3.fromRGB(14, 17, 28), Accent = Color3.fromRGB(70, 130, 255),
+		Outline = Color3.fromRGB(42, 50, 78), Font = Color3.fromRGB(225, 232, 250), View = Color3.fromRGB(10, 12, 22),
+	},
+	["Ungu Neon"] = {
+		Main = Color3.fromRGB(30, 22, 40), Background = Color3.fromRGB(20, 14, 28), Accent = Color3.fromRGB(180, 90, 255),
+		Outline = Color3.fromRGB(62, 46, 80), Font = Color3.fromRGB(238, 228, 250), View = Color3.fromRGB(14, 10, 20),
+	},
+	["Hijau Terminal"] = {
+		Main = Color3.fromRGB(16, 24, 18), Background = Color3.fromRGB(10, 16, 12), Accent = Color3.fromRGB(60, 220, 110),
+		Outline = Color3.fromRGB(34, 58, 40), Font = Color3.fromRGB(200, 245, 210), View = Color3.fromRGB(6, 12, 8),
+	},
+	["Abu Terang"] = {
+		Main = Color3.fromRGB(235, 238, 242), Background = Color3.fromRGB(246, 248, 250), Accent = Color3.fromRGB(0, 120, 200),
+		Outline = Color3.fromRGB(190, 196, 204), Font = Color3.fromRGB(30, 34, 40), View = Color3.fromRGB(255, 255, 255),
+	},
+}
+
+local function applyTheme(name)
+	local t = THEMES[name]
+	if not t then return end
+	Library.MainColor = t.Main
+	Library.BackgroundColor = t.Background
+	Library.AccentColor = t.Accent
+	Library.OutlineColor = t.Outline
+	Library.FontColor = t.Font
+	pcall(function() Library.AccentColorDark = Library:GetDarkerColor(t.Accent) end)
+	pcall(function() Library:UpdateColorsUsingRegistry() end)
+	pcall(Viewer.applyTheme, t)
+	pcall(ControlBar.applyTheme, t)
+end
+
+local GBTheme = Tabs.Theme:AddLeftGroupbox("Tema")
+GBTheme:AddDropdown("SS_Theme", {
 	Values = THEME_ORDER,
-	Default = "Dark",
+	Default = 1,
 	Multi = false,
-	Callback = function(name)
-		pcall(function() Fluent:SetTheme(name) end)
-		updateLauncherTheme(name)
+	Text = "Pilih tema",
+	Callback = function(v) applyTheme(v) end,
+})
+GBTheme:AddLabel("Tema berlaku untuk menu, viewer, dan bar kecil.", true)
+
+local GBMenu = Tabs.Theme:AddRightGroupbox("Menu")
+GBMenu:AddButton({
+	Text = "Tutup Semua (Unload)",
+	Func = function()
+		local fn = getgenv and getgenv().__StructScopeUnload
+		if fn then fn() else pcall(function() Library:Unload() end) end
+	end,
+	DoubleClick = true,
+})
+GBMenu:AddButton({
+	Text = "Reset Posisi Bar Kecil",
+	Func = function()
+		pcall(function()
+			ControlBar.gui:FindFirstChildOfClass("Frame").Position = UDim2.new(0.5, -118, 0, 6)
+		end)
 	end,
 })
-ThemeSection:AddParagraph({
-	Title = "Window Controls",
-	Content = "Gunakan ikon bawaan Fluent di title bar untuk minimize, maximize, dan close.\nShortcut keyboard RightShift untuk menyembunyikan atau memunculkan kembali jendela.",
-})
-ThemeSection:AddButton({
-	Title = "Unload StructScope",
-	Description = "Hentikan rekaman, lepaskan listener, dan tutup UI.",
-	Callback = function()
-		Window:Dialog({
-			Title = "Unload StructScope?",
-			Content = "Semua listener debugger akan dilepas dan UI akan ditutup.",
-			Buttons = {
-				{ Title = "Confirm", Callback = function()
-					local fn = getgenv and getgenv().__StructScopeUnload
-					if fn then fn() else Fluent:Destroy() end
-				end },
-				{ Title = "Cancel" },
-			},
-		})
-	end,
-})
+pcall(function()
+	local lbl = GBMenu:AddLabel("Tombol keyboard (opsional)")
+	lbl:AddKeyPicker("MenuKeybind", { Default = "None", NoUI = true, Text = "Menu keybind" })
+	local opts = (getgenv and getgenv().Options) or Library.Options
+	if opts and opts.MenuKeybind then Library.ToggleKeybind = opts.MenuKeybind end
+end)
 
 ------------------------------------------------------------------
 -- TAB INFO
 ------------------------------------------------------------------
-Tabs.Info:AddParagraph({
-	Title = "Cara Pakai",
-	Content = "1. Nyalakan Rekam Packet pada tab Utama.\n" ..
-		"2. Lakukan aktivitas di game untuk menghasilkan data yang diamati.\n" ..
-		"3. Pilih packet dan format tampilan pada Packet Explorer.\n" ..
-		"4. Buka Viewer untuk membaca DECLARED, OBSERVED, TEBAKAN, dan sampel.\n" ..
-		"5. Gunakan tab Log untuk filter packet, kategori, dan chat.\n" ..
-		"6. Gunakan tab Export untuk menyalin atau menyimpan laporan.",
-})
-Tabs.Info:AddParagraph({
-	Title = "Catatan Teknis",
-	Content = "Data yang ditampilkan adalah hasil decode ByteNet, bukan buffer mentah.\n" ..
-		"Declared bergantung pada akses debug.info dan getupvalues executor.\n" ..
-		"Observed hanya mencerminkan data yang benar-benar tertangkap.\n" ..
-		"Packet movement dibatasi per detik untuk mencegah log terlalu cepat penuh.\n" ..
-		"Debugger ini bersifat pasif; tidak menyediakan pengiriman atau replay packet.",
-})
+local GBInfo = Tabs.Info:AddLeftGroupbox("Cara Pakai")
+GBInfo:AddLabel(
+	"1. Nyalakan Rekam Packet (tab Utama atau tombol Rec di bar kecil).\n" ..
+	"2. Lakukan aksi di game: jalan, pukul, chat, dll.\n" ..
+	"3. Tab Utama: pilih packet dan Tampilan untuk melihat struct.\n" ..
+	"4. Tab Log: filter arah / kategori, lihat log dan chat.\n" ..
+	"5. Tab Copy: copy atau simpan table log, chat, tabel packet.\n" ..
+	"6. Bar kecil: SS (geser / buka lagi), Menu, View, Rec, - (kecilkan), X (tutup, klik 2x).",
+	true
+)
+local GBNote = Tabs.Info:AddRightGroupbox("Catatan")
+GBNote:AddLabel(
+	"Data yang dilihat adalah hasil decode ByteNet (table), bukan buffer mentah. " ..
+	"Declared dibaca dari definisi ByteNet (butuh getupvalues dan debug.info). " ..
+	"Observed hanya sebesar data yang pernah muncul. " ..
+	"Packet movement dibatasi per detik agar log tidak penuh. " ..
+	"Chat dicatat dari packet yang namanya mengandung kata chat/msg/say dan dari TextChatService.",
+	true
+)
 
-updateLauncherTheme("Dark")
+applyTheme("Teal Gelap")
 
-Fluent:Notify({
-	Title = "StructScope",
-	Content = "Fluent UI siap. Aktifkan Rekam Packet untuk mulai.",
-	Duration = 5,
-})
+------------------------------------------------------------------
+-- VIEWER BUTTONS
+------------------------------------------------------------------
+Viewer.addButton("Copy", Color3.fromRGB(120, 90, 190), function()
+	if Viewer.full == "" then return notify("Viewer kosong.", 2) end
+	notify(clip(Viewer.full) and "Teks disalin." or "setclipboard tidak didukung.", 2)
+end)
+Viewer.addButton("Save", Color3.fromRGB(40, 140, 150), function()
+	if Viewer.full == "" then return notify("Viewer kosong.", 2) end
+	local name = ascii(Viewer.title ~= "" and Viewer.title or "view"):gsub("[^%w_%-]", "_")
+	local path, err = writeOut(name, Viewer.full)
+	notify(path and ("Disimpan: " .. path) or tostring(err), 6)
+end)
+Viewer.addButton("Refresh", Color3.fromRGB(60, 110, 200), function() showView() end)
+Viewer.addButton("Tutup", Color3.fromRGB(190, 60, 60), function() Viewer.show(false) end)
 
 ------------------------------------------------------------------
 -- UNLOAD
@@ -1729,6 +1927,8 @@ local function cleanup()
 	state.active = false
 	for _, e in ipairs(entries) do pcall(detach, e) end
 	for _, c in ipairs(conns) do pcall(function() c:Disconnect() end) end
+	pcall(function() Viewer.gui:Destroy() end)
+	pcall(function() ControlBar.gui:Destroy() end)
 	if chatConn then pcall(function() chatConn:Disconnect() end) chatConn = nil end
 	if getgenv then
 		pcall(function()
@@ -1737,19 +1937,11 @@ local function cleanup()
 		end)
 	end
 end
-
--- Fluent's built-in title-bar close button calls Fluent:Destroy(). Wrap it so
--- the passive listeners are always detached before the interface is removed.
-local originalDestroy = Fluent.Destroy
-function Fluent:Destroy()
-	pcall(cleanup)
-	return originalDestroy(self)
-end
-
+pcall(function() Library:OnUnload(cleanup) end)
 if getgenv then
 	getgenv().__StructScopeUnload = function()
 		cleanup()
-		pcall(function() Fluent:Destroy() end)
+		pcall(function() Library:Unload() end)
 	end
 end
 
@@ -1761,7 +1953,7 @@ task.spawn(function()
 	while running do
 		local now = os.clock()
 		if state.listDirty then pcall(refreshLists) end
-		if state.auto and state.dirty and Viewer.visible then
+		if state.auto and state.dirty and Viewer.gui.Enabled then
 			state.dirty = false
 			pcall(function()
 				local text, title = render()
@@ -1773,7 +1965,7 @@ task.spawn(function()
 			local totalIn, totalOut = 0, 0
 			for _, e in ipairs(entries) do totalIn += e.cIn totalOut += e.cOut end
 			pcall(function()
-				statusLabel:SetDesc(("Status: %s | Packet %d | IN %d | OUT %d"):format(
+				statusLabel:SetText(("Status: %s | packet %d | IN %d | OUT %d"):format(
 					state.active and "REKAM" or "BERHENTI", #entries, totalIn, totalOut))
 			end)
 		end
@@ -1781,4 +1973,4 @@ task.spawn(function()
 	end
 end)
 
-notify("StructScope Fluent UI siap. Nyalakan Rekam Packet untuk mulai.", 4)
+notify("StructScope siap. Nyalakan 'Rekam Packet' untuk mulai.", 4)
