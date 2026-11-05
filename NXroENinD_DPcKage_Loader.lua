@@ -7,7 +7,7 @@
 --   2. Fill in RAW_BASE below with your raw.githubusercontent.com path
 --   3. Run this script once — NX is ready globally.
 
-local RAW_BASE = "https://raw.githubusercontent.com/YOUR_USER/YOUR_REPO/main/NXroENinD_DPcKage"
+local RAW_BASE = "https://raw.githubusercontent.com/Mytzcodes/Gbxzcf0x2993HsFDj1/refs/heads/main/NXroENinD_DPcKage"
 
 -- ── URL table ─────────────────────────────────────────────────────────────
 local URLS = {
