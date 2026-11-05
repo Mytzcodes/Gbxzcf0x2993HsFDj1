@@ -678,170 +678,377 @@ TabBrowse:CreateButton({
 })
 
 ------------------------------------------------------------------
--- EXPORT ALL SCRIPTS
+-- EXPORT ALL SCRIPTS (Structured Folders + Progress Bar)
 ------------------------------------------------------------------
 TabBrowse:CreateSection("Export Semua Script")
 
-TabBrowse:CreateButton({
-	Name = "📦  Export ALL Scripts (JSON)",
-	Callback = function()
-		notify("Export", "Memulai scan & export semua script...", 4)
-		task.spawn(function()
-			-- Kumpulkan SEMUA service yang mungkin punya script
-			local allServices = {}
-			pcall(function()
-				for _, svc in ipairs(game:GetChildren()) do
-					table.insert(allServices, svc)
-				end
-			end)
+local exportProgressPara = TabBrowse:CreateParagraph({
+	Title = "📦 Export Status",
+	Content = "Tekan tombol Export untuk mulai.\n\n📂 Hasil: workspace/ScriptExport_[PlaceId]/\n├── Decompiled/  → source .lua berhasil di-decompile\n├── Raw/         → bytecode/encrypted gagal decompile\n└── _index.json  → daftar lengkap semua script",
+})
 
-			-- Tambahkan service tersembunyi yang mungkin tidak muncul di GetChildren
-			local extraServiceNames = {
-				"Workspace", "Players", "Lighting", "ReplicatedFirst",
-				"ReplicatedStorage", "ServerScriptService", "ServerStorage",
-				"StarterGui", "StarterPack", "StarterPlayer", "SoundService",
-				"Chat", "LocalizationService", "TestService", "CoreGui",
-				"CorePackages", "HttpService", "InsertService",
-				"JointsService", "KeyframeSequenceProvider", "MaterialService",
-				"NetworkClient", "PermissionsService", "PhysicsService",
-				"PointsService", "PolicyService", "ProximityPromptService",
-				"RbxAnalyticsService", "RunService", "ScriptService",
-				"Selection", "SocialService", "SpawnerService",
-				"StudioService", "Teams", "TeleportService",
-				"TextChatService", "TextService", "TweenService",
-				"UserInputService", "VRService", "VirtualInputManager",
-				"MarketplaceService", "GamePassService", "BadgeService",
-				"CollectionService", "ContentProvider", "ContextActionService",
-				"DataStoreService", "Debris", "GuiService", "HapticService",
-				"PathfindingService", "AvatarEditorService",
-			}
-			local serviceSet = {}
-			for _, svc in ipairs(allServices) do
-				serviceSet[svc] = true
+local exportRunning = false
+
+-- Helper: buat progress bar text ██░░
+local function makeProgressBar(current, total, width)
+	width = width or 20
+	local ratio = total > 0 and (current / total) or 0
+	local filled = math.floor(ratio * width + 0.5)
+	local empty = width - filled
+	local pct = math.floor(ratio * 100 + 0.5)
+	return string.rep("█", filled) .. string.rep("░", empty) .. (" %d%%"):format(pct)
+end
+
+-- Helper: sanitize nama file (hapus karakter ilegal)
+local function sanitizeName(name)
+	name = name:gsub("[<>:\"/\\|%?%*]", "_")
+	name = name:gsub("%.+$", "")
+	if name == "" then name = "_unnamed" end
+	return name
+end
+
+-- Helper: konversi full path Instance → folder path relatif
+local function instanceToFolderPath(fullName, baseName)
+	-- "game.Workspace.Folder.Script" → "Workspace/Folder"
+	local parts = {}
+	for seg in fullName:gmatch("[^%.]+") do
+		table.insert(parts, sanitizeName(seg))
+	end
+	-- Hapus "game" di awal jika ada
+	if parts[1] and parts[1]:lower() == "game" then
+		table.remove(parts, 1)
+	end
+	-- Hapus nama script sendiri (elemen terakhir) supaya jadi folder path
+	if #parts > 0 then
+		table.remove(parts, #parts)
+	end
+	local folder = table.concat(parts, "/")
+	return folder ~= "" and (baseName .. "/" .. folder) or baseName
+end
+
+-- Helper: buat folder rekursif (jika executor support)
+local function ensureFolder(path)
+	if not makefolder then return end
+	local parts = {}
+	for seg in path:gmatch("[^/\\]+") do
+		table.insert(parts, seg)
+		local p = table.concat(parts, "/")
+		pcall(function()
+			if not isfolder(p) then
+				makefolder(p)
 			end
-			for _, name in ipairs(extraServiceNames) do
+		end)
+	end
+end
+
+-- JSON escape
+local function jsonEscape(s)
+	if type(s) ~= "string" then s = tostring(s) end
+	s = s:gsub("\\", "\\\\")
+	s = s:gsub('"', '\\"')
+	s = s:gsub("\n", "\\n")
+	s = s:gsub("\r", "\\r")
+	s = s:gsub("\t", "\\t")
+	s = s:gsub("\b", "\\b")
+	s = s:gsub("\f", "\\f")
+	s = s:gsub("[\0-\31]", function(c)
+		return string.format("\\u%04x", string.byte(c))
+	end)
+	return s
+end
+
+TabBrowse:CreateButton({
+	Name = "📦  Export ALL Scripts (Folder + JSON)",
+	Callback = function()
+		if exportRunning then
+			notify("Export", "Export sedang berjalan, tunggu selesai.", 3)
+			return
+		end
+		exportRunning = true
+		notify("Export", "Memulai export script...\nGame TIDAK akan freeze.", 4)
+
+		task.spawn(function()
+			local t0 = os.clock()
+
+			-- Update progress
+			local function setProgress(msg)
 				pcall(function()
-					local svc = game:GetService(name)
-					if svc and not serviceSet[svc] then
-						table.insert(allServices, svc)
-						serviceSet[svc] = true
-					end
+					exportProgressPara:Set({
+						Title = "📦 Export — Sedang Berjalan...",
+						Content = msg,
+					})
 				end)
 			end
 
-			-- Juga scan PlayerGui, PlayerScripts, Backpack, Character dari LocalPlayer
+			setProgress("⏳ Mengumpulkan daftar service...")
+			task.wait()
+
+			-------------------------------------------------------
+			-- FASE 1: Kumpulkan service yang PENTING saja
+			-------------------------------------------------------
+			local serviceTargets = {
+				{ name = "Workspace",          svc = nil },
+				{ name = "ReplicatedStorage",  svc = nil },
+				{ name = "ReplicatedFirst",    svc = nil },
+				{ name = "StarterGui",         svc = nil },
+				{ name = "StarterPack",        svc = nil },
+				{ name = "StarterPlayer",      svc = nil },
+				{ name = "Lighting",           svc = nil },
+				{ name = "SoundService",       svc = nil },
+				{ name = "Chat",               svc = nil },
+				{ name = "TextChatService",    svc = nil },
+				{ name = "Teams",              svc = nil },
+				{ name = "CoreGui",            svc = nil },
+				{ name = "CorePackages",       svc = nil },
+				{ name = "Players",            svc = nil },
+			}
+			for i, entry in ipairs(serviceTargets) do
+				pcall(function()
+					entry.svc = game:GetService(entry.name)
+				end)
+			end
+			-- Tambahkan PlayerGui, PlayerScripts, Backpack
 			pcall(function()
 				if LocalPlayer then
 					local pg = LocalPlayer:FindFirstChild("PlayerGui")
-					if pg and not serviceSet[pg] then
-						table.insert(allServices, pg)
-						serviceSet[pg] = true
-					end
+					if pg then table.insert(serviceTargets, { name = "PlayerGui", svc = pg }) end
 					local ps = LocalPlayer:FindFirstChild("PlayerScripts")
-					if ps and not serviceSet[ps] then
-						table.insert(allServices, ps)
-						serviceSet[ps] = true
-					end
+					if ps then table.insert(serviceTargets, { name = "PlayerScripts", svc = ps }) end
 					local bp = LocalPlayer:FindFirstChild("Backpack")
-					if bp and not serviceSet[bp] then
-						table.insert(allServices, bp)
-						serviceSet[bp] = true
-					end
-					local ch = LocalPlayer.Character
-					if ch and not serviceSet[ch] then
-						table.insert(allServices, ch)
-						serviceSet[ch] = true
-					end
+					if bp then table.insert(serviceTargets, { name = "Backpack", svc = bp }) end
 				end
 			end)
+			-- Filter yang valid
+			local validServices = {}
+			for _, entry in ipairs(serviceTargets) do
+				if entry.svc then
+					table.insert(validServices, entry)
+				end
+			end
 
-			-- Scan semua script dari semua service
-			local scriptData = {}
-			local totalFound = 0
-			local totalSourced = 0
+			setProgress(("✅ %d service ditemukan.\n⏳ Menghitung total script..."):format(#validServices))
+			task.wait()
+
+			-------------------------------------------------------
+			-- FASE 2: Hitung total script dulu (untuk progress bar)
+			-------------------------------------------------------
+			local allScriptInstances = {}
 			local visited = {}
+			local totalCount = 0
 
-			for _, root in ipairs(allServices) do
+			for si, entry in ipairs(validServices) do
 				pcall(function()
-					local descendants = root:GetDescendants()
-					for _, obj in ipairs(descendants) do
+					local descs = entry.svc:GetDescendants()
+					for _, obj in ipairs(descs) do
 						if obj:IsA("LuaSourceContainer") and not visited[obj] then
 							visited[obj] = true
-							totalFound = totalFound + 1
-							local fullName = ""
-							pcall(function() fullName = obj:GetFullName() end)
-							local className = ""
-							pcall(function() className = obj.ClassName end)
-
-							local source = nil
-							local sourceStatus = "unavailable"
-
-							-- Coba ambil source langsung
-							pcall(function()
-								local s = obj.Source
-								if type(s) == "string" and s ~= "" then
-									source = s
-									sourceStatus = "raw"
-								end
-							end)
-
-							-- Coba decompile jika source kosong
-							if not source and decompile then
-								pcall(function()
-									local s = decompile(obj)
-									if type(s) == "string" and s ~= "" then
-										source = s
-										sourceStatus = "decompiled"
-									end
-								end)
-							end
-
-							-- Coba getscriptbytecode jika ada
-							if not source and getscriptbytecode then
-								pcall(function()
-									local s = getscriptbytecode(obj)
-									if type(s) == "string" and s ~= "" then
-										source = s
-										sourceStatus = "bytecode"
-									end
-								end)
-							end
-
-							if source then
-								totalSourced = totalSourced + 1
-							end
-
-							table.insert(scriptData, {
-								path = fullName,
-								class = className,
-								sourceType = sourceStatus,
-								source = source or ("-- [Source tidak bisa dibaca untuk: " .. fullName .. "]"),
-								lineCount = source and (select(2, source:gsub("\n", "\n")) + 1) or 0,
-								byteSize = source and #source or 0,
-							})
+							totalCount = totalCount + 1
+							table.insert(allScriptInstances, obj)
 						end
 					end
 				end)
+				-- Yield setiap service supaya tidak freeze
+				if si % 3 == 0 then
+					setProgress(("⏳ Scanning service %d/%d...\n🔍 %d script ditemukan sejauh ini"):format(si, #validServices, totalCount))
+					task.wait()
+				end
 			end
 
-			-- Sortir berdasarkan path
-			table.sort(scriptData, function(a, b) return a.path < b.path end)
+			setProgress(("✅ Scan selesai: %d script ditemukan.\n⏳ Memulai decompile & export..."):format(totalCount))
+			task.wait()
 
-			-- Build JSON secara manual (tanpa library)
-			local function jsonEscape(s)
-				s = s:gsub("\\", "\\\\")
-				s = s:gsub('"', '\\"')
-				s = s:gsub("\n", "\\n")
-				s = s:gsub("\r", "\\r")
-				s = s:gsub("\t", "\\t")
-				s = s:gsub("\b", "\\b")
-				s = s:gsub("\f", "\\f")
-				-- Hapus karakter kontrol lainnya
-				s = s:gsub("[\0-\31]", function(c)
-					return string.format("\\u%04x", string.byte(c))
+			if totalCount == 0 then
+				setProgress("⚠ Tidak ada script ditemukan di game ini.")
+				exportRunning = false
+				notify("Export", "Tidak ada script ditemukan.", 4)
+				return
+			end
+
+			-------------------------------------------------------
+			-- FASE 3: Decompile buffer + export per-file
+			-------------------------------------------------------
+			local baseFolder = ("ScriptExport_%s"):format(tostring(game.PlaceId))
+			local decompFolder = baseFolder .. "/Decompiled"
+			local rawFolder = baseFolder .. "/Raw"
+
+			local hasWritefile = writefile ~= nil
+			if hasWritefile then
+				pcall(function() ensureFolder(baseFolder) end)
+				pcall(function() ensureFolder(decompFolder) end)
+				pcall(function() ensureFolder(rawFolder) end)
+			end
+
+			local indexData = {}
+			local totalDecompiled = 0
+			local totalRaw = 0
+			local totalFailed = 0
+			local BATCH_SIZE = 5  -- yield setiap 5 script (anti-freeze)
+			local filesSaved = 0
+
+			for idx, obj in ipairs(allScriptInstances) do
+				local fullName = ""
+				pcall(function() fullName = obj:GetFullName() end)
+				local className = ""
+				pcall(function() className = obj.ClassName end)
+				local scriptName = ""
+				pcall(function() scriptName = obj.Name end)
+
+				local source = nil
+				local sourceType = "failed"
+				local rawBytes = nil
+
+				-- 1) Coba .Source langsung
+				pcall(function()
+					local s = obj.Source
+					if type(s) == "string" and s ~= "" then
+						source = s
+						sourceType = "source"
+					end
 				end)
-				return s
+
+				-- 2) Coba decompile
+				if not source and decompile then
+					pcall(function()
+						local s = decompile(obj)
+						if type(s) == "string" and s ~= "" then
+							source = s
+							sourceType = "decompiled"
+						end
+					end)
+				end
+
+				-- 3) Coba getscriptbytecode (simpan di Raw/)
+				if getscriptbytecode then
+					pcall(function()
+						local b = getscriptbytecode(obj)
+						if type(b) == "string" and b ~= "" then
+							rawBytes = b
+							if not source then
+								sourceType = "bytecode_only"
+							end
+						end
+					end)
+				end
+
+				-- 4) Coba dumpstring sebagai fallback
+				if not source and not rawBytes and dumpstring then
+					pcall(function()
+						local s = dumpstring(obj)
+						if type(s) == "string" and s ~= "" then
+							rawBytes = s
+							sourceType = "dumpstring"
+						end
+					end)
+				end
+
+				-- Tentukan file path relatif
+				local safeName = sanitizeName(scriptName)
+				local relPath = fullName:gsub("^game%.?", ""):gsub("%.", "/")
+				local safeRelPath = ""
+				for seg in relPath:gmatch("[^/]+") do
+					if safeRelPath ~= "" then safeRelPath = safeRelPath .. "/" end
+					safeRelPath = safeRelPath .. sanitizeName(seg)
+				end
+				if safeRelPath == "" then safeRelPath = safeName end
+
+				-- Simpan file
+				local decompPath = nil
+				local rawPath = nil
+
+				if hasWritefile then
+					-- Simpan decompiled/source ke Decompiled/
+					if source then
+						local fp = decompFolder .. "/" .. safeRelPath .. ".lua"
+						local folderPart = fp:match("(.+)/[^/]+$")
+						if folderPart then pcall(function() ensureFolder(folderPart) end) end
+						local ok = pcall(writefile, fp, source)
+						if ok then
+							decompPath = fp
+							totalDecompiled = totalDecompiled + 1
+							filesSaved = filesSaved + 1
+						end
+					end
+
+					-- Simpan raw/bytecode ke Raw/ (selalu, sebagai backup)
+					if rawBytes then
+						local fp = rawFolder .. "/" .. safeRelPath .. ".bin"
+						local folderPart = fp:match("(.+)/[^/]+$")
+						if folderPart then pcall(function() ensureFolder(folderPart) end) end
+						local ok = pcall(writefile, fp, rawBytes)
+						if ok then
+							rawPath = fp
+							totalRaw = totalRaw + 1
+							filesSaved = filesSaved + 1
+						end
+					elseif source then
+						-- Jika tidak ada bytecode, simpan source juga di Raw/ sebagai .lua
+						local fp = rawFolder .. "/" .. safeRelPath .. ".lua"
+						local folderPart = fp:match("(.+)/[^/]+$")
+						if folderPart then pcall(function() ensureFolder(folderPart) end) end
+						local ok = pcall(writefile, fp, source)
+						if ok then
+							rawPath = fp
+							totalRaw = totalRaw + 1
+							filesSaved = filesSaved + 1
+						end
+					end
+
+					if not source and not rawBytes then
+						totalFailed = totalFailed + 1
+					end
+				else
+					-- Tidak ada writefile, hanya kumpulkan data
+					if source then
+						totalDecompiled = totalDecompiled + 1
+					elseif rawBytes then
+						totalRaw = totalRaw + 1
+					else
+						totalFailed = totalFailed + 1
+					end
+				end
+
+				-- Kumpulkan untuk index JSON
+				local lines = 0
+				local bytes = 0
+				if source then
+					lines = select(2, source:gsub("\n", "\n")) + 1
+					bytes = #source
+				elseif rawBytes then
+					bytes = #rawBytes
+				end
+
+				table.insert(indexData, {
+					path = fullName,
+					class = className,
+					sourceType = sourceType,
+					decompFile = decompPath,
+					rawFile = rawPath,
+					lineCount = lines,
+					byteSize = bytes,
+					source = source or nil,
+				})
+
+				-- Update progress bar setiap BATCH_SIZE script
+				if idx % BATCH_SIZE == 0 or idx == totalCount then
+					local bar = makeProgressBar(idx, totalCount)
+					local elapsed = os.clock() - t0
+					local eta = totalCount > 0 and (elapsed / idx * (totalCount - idx)) or 0
+					setProgress(
+						("[%s]\n\n📊 %d / %d script diproses\n✅ Decompiled: %d  |  📁 Raw: %d  |  ❌ Gagal: %d\n⏱ Elapsed: %.1fs  |  ETA: %.1fs"):format(
+							bar, idx, totalCount,
+							totalDecompiled, totalRaw, totalFailed,
+							elapsed, eta
+						)
+					)
+					task.wait()
+				end
 			end
+
+			-------------------------------------------------------
+			-- FASE 4: Buat _index.json
+			-------------------------------------------------------
+			setProgress(("⏳ Membuat _index.json... (%d script)"):format(#indexData))
+			task.wait()
 
 			local jsonParts = {}
 			table.insert(jsonParts, "{\n")
@@ -852,74 +1059,121 @@ TabBrowse:CreateButton({
 			pcall(function() pName = LocalPlayer.Name end)
 			table.insert(jsonParts, ('    "player": "%s",\n'):format(jsonEscape(pName)))
 			table.insert(jsonParts, ('    "exportDate": "%s",\n'):format(jsonEscape(os.date("%Y-%m-%d %H:%M:%S"))))
-			table.insert(jsonParts, ('    "totalScriptsFound": %d,\n'):format(totalFound))
-			table.insert(jsonParts, ('    "totalWithSource": %d\n'):format(totalSourced))
+			table.insert(jsonParts, ('    "totalScripts": %d,\n'):format(totalCount))
+			table.insert(jsonParts, ('    "totalDecompiled": %d,\n'):format(totalDecompiled))
+			table.insert(jsonParts, ('    "totalRaw": %d,\n'):format(totalRaw))
+			table.insert(jsonParts, ('    "totalFailed": %d\n'):format(totalFailed))
 			table.insert(jsonParts, "  },\n")
 			table.insert(jsonParts, '  "scripts": [\n')
 
-			for i, entry in ipairs(scriptData) do
+			for i, entry in ipairs(indexData) do
 				table.insert(jsonParts, "    {\n")
 				table.insert(jsonParts, ('      "path": "%s",\n'):format(jsonEscape(entry.path)))
 				table.insert(jsonParts, ('      "class": "%s",\n'):format(jsonEscape(entry.class)))
 				table.insert(jsonParts, ('      "sourceType": "%s",\n'):format(jsonEscape(entry.sourceType)))
+				if entry.decompFile then
+					table.insert(jsonParts, ('      "decompFile": "%s",\n'):format(jsonEscape(entry.decompFile)))
+				end
+				if entry.rawFile then
+					table.insert(jsonParts, ('      "rawFile": "%s",\n'):format(jsonEscape(entry.rawFile)))
+				end
 				table.insert(jsonParts, ('      "lineCount": %d,\n'):format(entry.lineCount))
-				table.insert(jsonParts, ('      "byteSize": %d,\n'):format(entry.byteSize))
-				table.insert(jsonParts, ('      "source": "%s"\n'):format(jsonEscape(entry.source)))
-				if i < #scriptData then
+				table.insert(jsonParts, ('      "byteSize": %d\n'):format(entry.byteSize))
+				if i < #indexData then
 					table.insert(jsonParts, "    },\n")
 				else
 					table.insert(jsonParts, "    }\n")
 				end
+
+				-- Yield setiap 50 entri saat build JSON
+				if i % 50 == 0 then task.wait() end
 			end
 
 			table.insert(jsonParts, "  ]\n")
 			table.insert(jsonParts, "}")
 
 			local jsonStr = table.concat(jsonParts)
+			task.wait()
 
-			-- Simpan file
-			local fileName = ("ScriptExport_%s_%s.json"):format(
-				tostring(game.PlaceId),
-				os.date("%Y%m%d_%H%M%S")
-			)
-			local saved = false
-			local savePath = fileName
-
-			-- Coba writefile (executor workspace)
-			if writefile then
-				local ok, err = pcall(writefile, fileName, jsonStr)
-				if ok then
-					saved = true
-					savePath = "workspace/" .. fileName
-				end
+			-- Simpan index
+			local indexSaved = false
+			if hasWritefile then
+				local ok = pcall(writefile, baseFolder .. "/_index.json", jsonStr)
+				indexSaved = ok
 			end
 
-			-- Juga copy ke clipboard sebagai backup
-			local clipped = clip(jsonStr)
+			-- Jika tidak bisa writefile, coba clipboard
+			if not hasWritefile then
+				clip(jsonStr)
+			end
 
-			if saved then
-				addLog("info", ("✓ Export selesai! %d/%d script berhasil. Tersimpan di: %s"):format(totalSourced, totalFound, savePath))
-				notify("Export Berhasil ✓",
-					("📁 %d/%d script diekspor.\n📂 Lokasi: %s\nFormat: JSON"):format(totalSourced, totalFound, savePath),
-					8)
-			elseif clipped then
-				addLog("info", ("✓ Export selesai! %d/%d script. JSON disalin ke clipboard (writefile tidak tersedia)."):format(totalSourced, totalFound))
-				notify("Export ke Clipboard ✓",
-					("📋 %d/%d script. JSON disalin ke clipboard.\n(writefile tidak tersedia, gunakan paste ke file manual)"):format(totalSourced, totalFound),
-					8)
+			local elapsed = os.clock() - t0
+
+			-------------------------------------------------------
+			-- FASE 5: Tampilkan hasil akhir
+			-------------------------------------------------------
+			local resultMsg
+			if hasWritefile then
+				resultMsg = (
+					"✅ EXPORT SELESAI! (%.1f detik)\n\n" ..
+					"📂 Lokasi: workspace/%s/\n" ..
+					"├── Decompiled/  → %d file .lua\n" ..
+					"├── Raw/         → %d file (bytecode/backup)\n" ..
+					"└── _index.json  → daftar %d script\n\n" ..
+					"❌ Gagal decompile: %d script\n" ..
+					"💾 Total file tersimpan: %d"
+				):format(
+					elapsed,
+					baseFolder,
+					totalDecompiled,
+					totalRaw,
+					totalCount,
+					totalFailed,
+					filesSaved + (indexSaved and 1 or 0)
+				)
 			else
-				addLog("warn", ("Export: %d/%d script dikumpulkan tapi tidak bisa menyimpan file (writefile & setclipboard tidak tersedia)."):format(totalSourced, totalFound))
-				notify("Export",
-					("⚠ %d script ditemukan tapi tidak bisa menyimpan.\nExecutor tidak mendukung writefile/setclipboard."):format(totalFound),
-					8)
+				resultMsg = (
+					"✅ EXPORT SELESAI! (%.1f detik)\n\n" ..
+					"⚠ writefile tidak tersedia!\n" ..
+					"📋 _index.json disalin ke clipboard.\n" ..
+					"📊 %d script | ✅ %d decompiled | ❌ %d gagal"
+				):format(elapsed, totalCount, totalDecompiled, totalFailed)
 			end
+
+			pcall(function()
+				exportProgressPara:Set({
+					Title = "📦 Export — Selesai ✅",
+					Content = resultMsg,
+				})
+			end)
+
+			addLog("info", ("✓ Export selesai! %d script, %d decompiled, %d raw, %d gagal (%.1fs)"):format(
+				totalCount, totalDecompiled, totalRaw, totalFailed, elapsed
+			))
+			notify("Export Berhasil ✓",
+				("📁 %d script diekspor ke workspace/%s/\n✅ %d decompiled | 📁 %d raw | ❌ %d gagal"):format(
+					totalCount, baseFolder, totalDecompiled, totalRaw, totalFailed
+				), 10)
+
+			exportRunning = false
 		end)
 	end,
 })
 
-TabBrowse:CreateParagraph({
-	Title = "📁 Info Export",
-	Content = "Tekan tombol Export di atas untuk scan & export SEMUA script dalam game.\n\n📂 File tersimpan di: workspace/ (folder executor)\n📄 Format: JSON dengan source code lengkap\n🔍 Termasuk: Script, LocalScript, ModuleScript dari SEMUA service",
+TabBrowse:CreateButton({
+	Name = "🔄  Reset Progress",
+	Callback = function()
+		if exportRunning then
+			notify("Export", "Tunggu export selesai dulu.", 2)
+			return
+		end
+		pcall(function()
+			exportProgressPara:Set({
+				Title = "📦 Export Status",
+				Content = "Tekan tombol Export untuk mulai.\n\n📂 Hasil: workspace/ScriptExport_[PlaceId]/\n├── Decompiled/  → source .lua berhasil di-decompile\n├── Raw/         → bytecode/encrypted gagal decompile\n└── _index.json  → daftar lengkap semua script",
+			})
+		end)
+	end,
 })
 
 ------------------------------------------------------------------
