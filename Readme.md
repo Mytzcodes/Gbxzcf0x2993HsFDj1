@@ -12,7 +12,7 @@ Framework scripting untuk game Roblox berbasis **ByteNet** (struktur `ByteNet.pa
 
 ```lua
 -- Cara A: simpan GrowBloxKit.lua di folder workspace executor
-local GB = loadstring(readfile("GrowBloxKit.lua"))()
+local GB = loadstring("https://raw.githubusercontent.com/Mytzcodes/Gbxzcf0x2993HsFDj1/refs/heads/main/GrowBloxKit.lua")()
 
 -- Cara B: paste isi GrowBloxKit.lua di atas script-mu, lalu:
 -- local GB = <isi file>   (file diakhiri `return GB`)
@@ -35,7 +35,7 @@ Syarat executor (semakin lengkap semakin baik):
 ## 2. Quick Start
 
 ```lua
-local GB = loadstring(readfile("GrowBloxKit.lua"))()
+local GB = loadstring("https://raw.githubusercontent.com/Mytzcodes/Gbxzcf0x2993HsFDj1/refs/heads/main/GrowBloxKit.lua")()
 GB.Init()
 
 -- Chat
