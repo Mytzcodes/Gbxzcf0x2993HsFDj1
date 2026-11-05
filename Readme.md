@@ -31,7 +31,7 @@ Framework ini menggunakan **Lazy Loader**. Modul tidak akan didownload atau mema
 ### Cara Pakai di Executor / Script:
 ```lua
 -- 1. Jalankan Loader dari GitHub Anda:
-loadstring(game:HttpGet("https://raw.githubusercontent.com/YOUR_USER/YOUR_REPO/main/NXroENinD_DPcKage_Loader.lua", true))()
+loadstring(game:HttpGet("https://raw.githubusercontent.com/Mytzcodes/Gbxzcf0x2993HsFDj1/refs/heads/main/NXroENinD_DPcKage_Loader.lua"))()
 
 -- 2. NX sekarang tersedia secara GLOBAL di seluruh script:
 NX.Init({ SmoothBuf = true })
