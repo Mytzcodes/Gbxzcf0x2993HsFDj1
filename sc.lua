@@ -1,43 +1,48 @@
 --[[
-    StructScope v2.1  -  ByteNet Debugger + Framework Generator (SCRIPT HUB UI)
+    StructScope v3.0  -  ByteNet Debugger + Struct Table + Docs Generator (SCRIPT HUB UI)
     PASIF: hanya membaca / merekam. Debugger tidak mengirim, mengubah, atau memutar ulang packet.
 
-    FITUR UTAMA
-      * Channel RELIABLE / UNRELIABLE per packet:
-          - OUT : pasti (hook process.client.sendReliable / sendUnreliable)
-          - IN  : dari definisi packet (reliabilityType) atau heuristik RemoteEvent
-                  (tanda "~" artinya hasil tebakan)
-      * Tiga sumber struct: DECLARED (definisi ByteNet), OBSERVED (data nyata), TEBAKAN
-      * Statistik channel: jumlah packet, byte mentah RemoteEvent, packet/detik
-      * Log packet + chat log, filter arah / channel / kategori / nama
-      * Generator FRAMEWORK : Packets.lua (definePacket + reliabilityType),
-                              Dokumentasi Markdown, Template script per packet
-      * API untuk script baru: getgenv().StructScope
+    BARU di v3.0
+      * SUB-PACKET: satu packet ByteNet bisa membawa banyak jenis pesan (mis. packet.packet = "message").
+        Debugger mendeteksi field pembeda (packet/type/action/message/cmd/...) lalu mencatat
+        struct, hitungan, dan sampel PER sub-packet. Log bisa difilter per packet / sub / isi data.
+      * TABEL STRUCT dari packet: declared (definisi ByteNet) atau observed (data nyata), plus per sub-packet.
+      * LOG scroll: panel log sendiri di tab Log (banyak baris, auto-scroll ke data baru).
+      * RESPONSIVE: ukuran awal menyesuaikan layar, mode kompak untuk mobile (sidebar ikon, satu kolom),
+        tarik bar paling bawah menu untuk ubah ukuran, tombol cepat "SS" untuk buka/tutup menu.
+      * SAVE DOCS: satu klik menyimpan folder rapi berformat Markdown (README, overview, coverage,
+        structs, subpackets, packets, categories, logs, lua). Ada auto-save berkala.
 
-    API (getgenv().StructScope) untuk script lain:
+    API (getgenv().StructScope):
       StructScope.Packets.get(namaAtauId)   -> objek ByteNet asli (listen / send)
-      StructScope.Packets.info(namaAtauId)  -> { id, name, channel, source, struct, schema, counts }
+      StructScope.Packets.info(namaAtauId)  -> { id, name, channel, source, struct, schema, counts, subs, ... }
+      StructScope.Packets.subs(namaAtauId)  -> { [sub] = { n, inN, outN, schema, samples } }
       StructScope.Packets.list()            -> daftar nama packet
-      StructScope.Subscribe(function(name, dir, chan, data, entry) end) -> fungsi unsubscribe
+      StructScope.Subscribe(function(name, dir, chan, data, entry, sub) end) -> fungsi unsubscribe
       StructScope.Log / StructScope.Chat    -> tabel log
       StructScope.Stats()                   -> { inR, inU, outR, outU, ... }
-      StructScope.Export.framework() / .docs() / .report()  -> string
+      StructScope.Export.framework() / .docs() / .report() / .structs() -> string
+      StructScope.SaveDocs(snapshot?)       -> simpan folder docs
 ]]
 
 ------------------------------------------------------------------
 -- CONFIG
 ------------------------------------------------------------------
-local VERSION = "2.1"
+local VERSION = "3.0"
 local CFG = {
-	MaxSamples = 12,     -- sampel terakhir yang disimpan per packet
-	LearnLimit = 300,    -- jumlah data per packet yang dipelajari penuh (sisanya 1 dari 20)
-	FeedMax    = 250,    -- baris live feed
-	LogMax     = 1500,   -- entri log packet keseluruhan
+	MaxSamples = 12,     -- sampel terakhir per packet
+	SubSamples = 5,      -- sampel terakhir per sub-packet
+	SubCap     = 120,    -- maks jenis sub-packet per packet
+	LearnLimit = 300,    -- data per packet yang dipelajari penuh (sisanya 1 dari 20)
+	FeedMax    = 250,
+	LogMax     = 2000,   -- entri log keseluruhan
 	MoveCap    = 6,      -- maks packet movement dicatat per detik (0 = tanpa batas)
-	TextLimit  = 12000,  -- batas karakter di viewer (Copy/Save tetap penuh)
-	Ascii      = true,   -- ganti karakter non-ASCII jadi '?' (cegah huruf kotak)
+	TextLimit  = 20000,  -- batas karakter di viewer (Copy/Save tetap penuh)
+	LogLimit   = 28000,  -- batas karakter panel log
+	Ascii      = true,   -- non-ASCII jadi '?'
 	MenuKey    = "RightShift",
-	AutoScanEvery = 20,  -- detik, bila Auto-scan dinyalakan
+	AutoScanEvery = 20,
+	AutoSaveMin = 5,     -- menit, bila Auto-save docs dinyalakan
 }
 
 ------------------------------------------------------------------
@@ -52,9 +57,7 @@ if getgenv and getgenv().__StructScopeUnload then
 end
 
 ------------------------------------------------------------------
--- SCRIPT HUB UI (library custom, tanpa dependensi luar)
--- Semua ikon digambar dari Frame / UICorner / UIStroke, jadi tidak
--- ada glyph font yang bisa berubah jadi kotak.
+-- SCRIPT HUB UI (library custom, tanpa dependensi luar, ikon digambar dari Frame)
 ------------------------------------------------------------------
 local function buildHubUI()
 	local UIS = game:GetService("UserInputService")
@@ -67,16 +70,12 @@ local function buildHubUI()
 		OutlineColor = Color3.fromRGB(31, 58, 133),
 		FontColor = Color3.fromRGB(234, 241, 255),
 		Toggled = true,
-		Options = {},
-		Toggles = {},
+		Options = {}, Toggles = {},
 		MenuKey = Enum.KeyCode.RightShift,
-		_conns = {},
-		_unload = {},
-		_reg = {},
+		_conns = {}, _unload = {}, _reg = {}, _resize = {},
 	}
 	L.AccentColorDark = L.AccentColor:Lerp(Color3.new(0, 0, 0), 0.4)
 
-	-- ---------- helpers ----------
 	local function conn(c) L._conns[#L._conns + 1] = c return c end
 	local function lighten(c, t) return c:Lerp(Color3.new(1, 1, 1), t) end
 	local function darken(c, t) return c:Lerp(Color3.new(0, 0, 0), t) end
@@ -166,12 +165,21 @@ local function buildHubUI()
 	end
 	L.ScreenGui = gui
 
+	local function screenSize()
+		local s = gui.AbsoluteSize
+		if s.X < 100 or s.Y < 100 then
+			local cam = workspace.CurrentCamera
+			if cam then s = cam.ViewportSize end
+		end
+		return s
+	end
+
 	local overlay = new("Frame", {
 		Name = "Overlay", Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, ZIndex = 50,
 	}, gui)
 	local toastHolder = new("Frame", {
-		Name = "Toasts", AnchorPoint = Vector2.new(1, 1), Position = UDim2.new(1, -16, 1, -16),
-		Size = UDim2.new(0, 300, 1, -32), BackgroundTransparency = 1, ZIndex = 60,
+		Name = "Toasts", AnchorPoint = Vector2.new(1, 1), Position = UDim2.new(1, -12, 1, -12),
+		Size = UDim2.new(0, 270, 1, -24), BackgroundTransparency = 1, ZIndex = 60,
 	}, gui)
 	new("UIListLayout", {
 		Padding = UDim.new(0, 8), SortOrder = Enum.SortOrder.LayoutOrder,
@@ -193,14 +201,9 @@ local function buildHubUI()
 
 	local function attachTip(obj, text)
 		if not text or text == "" then return end
-		conn(obj.MouseEnter:Connect(function()
-			tip.Text = text
-			tip.Visible = true
-		end))
+		conn(obj.MouseEnter:Connect(function() tip.Text = text tip.Visible = true end))
 		conn(obj.MouseLeave:Connect(function() tip.Visible = false end))
-		conn(obj.MouseMoved:Connect(function(x, y)
-			tip.Position = UDim2.fromOffset(x + 14, y + 16)
-		end))
+		conn(obj.MouseMoved:Connect(function(x, y) tip.Position = UDim2.fromOffset(x + 14, y + 16) end))
 	end
 
 	-- ---------- notify ----------
@@ -233,14 +236,13 @@ local function buildHubUI()
 		end)
 	end
 
-	-- ---------- icons (digambar dari Frame) ----------
+	-- ---------- icons ----------
 	local function iconFrame(parent, kind)
 		local box = new("Frame", { Size = UDim2.fromOffset(22, 22), BackgroundTransparency = 1 }, parent)
 		local parts = {}
 		local function fill(size, pos, round, anchor)
 			local f = new("Frame", {
-				Size = size, Position = pos, BorderSizePixel = 0,
-				AnchorPoint = anchor or Vector2.new(0, 0),
+				Size = size, Position = pos, BorderSizePixel = 0, AnchorPoint = anchor or Vector2.new(0, 0),
 			}, box)
 			if round then corner(f, round) end
 			parts[#parts + 1] = { f, "BackgroundColor3" }
@@ -276,7 +278,7 @@ local function buildHubUI()
 		elseif kind == "palette" then
 			ring(UDim2.fromOffset(19, 19), c, 10, 2)
 			fill(UDim2.fromOffset(8, 8), UDim2.fromOffset(11, 8), 4, Vector2.new(0.5, 0))
-		else -- info
+		else
 			ring(UDim2.fromOffset(19, 19), c, 10, 2)
 			fill(UDim2.fromOffset(3, 3), UDim2.fromOffset(11, 6), 2, Vector2.new(0.5, 0))
 			fill(UDim2.fromOffset(3, 7), UDim2.fromOffset(11, 10), 1, Vector2.new(0.5, 0))
@@ -288,8 +290,8 @@ local function buildHubUI()
 	end
 
 	local ICON_BY_TAB = {
-		Utama = "home", Viewer = "eye", Log = "bars", Copy = "copy",
-		Framework = "cube", Tema = "palette", Info = "info",
+		Utama = "home", Viewer = "eye", Log = "bars", Struct = "cube",
+		Simpan = "copy", Tema = "palette", Info = "info",
 	}
 
 	-- ---------- groupbox ----------
@@ -310,12 +312,10 @@ local function buildHubUI()
 			FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 8),
 			VerticalAlignment = Enum.VerticalAlignment.Center,
 		}, head)
-		local bolt = new("Frame", {
-			Size = UDim2.fromOffset(4, 16), BorderSizePixel = 0, LayoutOrder = 1,
-		}, head)
+		local bolt = new("Frame", { Size = UDim2.fromOffset(4, 16), BorderSizePixel = 0, LayoutOrder = 1 }, head)
 		bind(bolt, "BackgroundColor3", cSoft)
 		corner(bolt, 2)
-		local ttl = txt(head, {
+		txt(head, {
 			Size = UDim2.new(0, 0, 1, 0), AutomaticSize = Enum.AutomaticSize.X,
 			Font = Enum.Font.GothamBold, TextSize = 15, Text = title, LayoutOrder = 2,
 		})
@@ -333,7 +333,6 @@ local function buildHubUI()
 		local function nxt() n += 1 return n end
 		function gb:Resize() end
 
-		-- ===== Label =====
 		function gb:AddLabel(text, wrap)
 			local lbl = txt(cont, {
 				Size = UDim2.new(1, 0, 0, 18), AutomaticSize = Enum.AutomaticSize.Y, Text = tostring(text),
@@ -384,7 +383,6 @@ local function buildHubUI()
 			return obj
 		end
 
-		-- ===== Toggle =====
 		function gb:AddToggle(id, o)
 			o = o or {}
 			local value = o.Default and true or false
@@ -392,9 +390,7 @@ local function buildHubUI()
 				Size = UDim2.new(1, 0, 0, 30), BackgroundTransparency = 1, Text = "",
 				AutoButtonColor = false, LayoutOrder = nxt(),
 			}, cont)
-			txt(row, {
-				Size = UDim2.new(1, -52, 1, 0), Text = o.Text or id, TextTruncate = Enum.TextTruncate.AtEnd,
-			})
+			txt(row, { Size = UDim2.new(1, -52, 1, 0), Text = o.Text or id, TextTruncate = Enum.TextTruncate.AtEnd })
 			local track = new("Frame", {
 				AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, 0, 0.5, 0),
 				Size = UDim2.fromOffset(40, 22), BorderSizePixel = 0,
@@ -429,7 +425,6 @@ local function buildHubUI()
 			return t
 		end
 
-		-- ===== Button =====
 		function gb:AddButton(o, func)
 			if type(o) == "string" then o = { Text = o, Func = func } end
 			local hover = false
@@ -463,7 +458,6 @@ local function buildHubUI()
 			return { Button = b }
 		end
 
-		-- ===== Input =====
 		function gb:AddInput(id, o)
 			o = o or {}
 			local wrap = new("Frame", {
@@ -501,7 +495,6 @@ local function buildHubUI()
 			return t
 		end
 
-		-- ===== Slider =====
 		function gb:AddSlider(id, o)
 			o = o or {}
 			local min, max = o.Min or 0, o.Max or 100
@@ -511,9 +504,7 @@ local function buildHubUI()
 				return math.floor(v * m + 0.5) / m
 			end
 			local value = math.clamp(o.Default or min, min, max)
-			local wrap = new("Frame", {
-				Size = UDim2.new(1, 0, 0, 46), BackgroundTransparency = 1, LayoutOrder = nxt(),
-			}, cont)
+			local wrap = new("Frame", { Size = UDim2.new(1, 0, 0, 46), BackgroundTransparency = 1, LayoutOrder = nxt() }, cont)
 			txt(wrap, { Size = UDim2.new(1, -50, 0, 18), Text = o.Text or id, TextSize = 12, TextTruncate = Enum.TextTruncate.AtEnd }, cDim)
 			local vl = txt(wrap, {
 				Size = UDim2.new(0, 46, 0, 18), Position = UDim2.new(1, -46, 0, 0), Text = tostring(value),
@@ -585,7 +576,6 @@ local function buildHubUI()
 			return t
 		end
 
-		-- ===== Dropdown =====
 		function gb:AddDropdown(id, o)
 			o = o or {}
 			local values = o.Values or {}
@@ -618,7 +608,6 @@ local function buildHubUI()
 				Position = UDim2.fromOffset(10, 0), Size = UDim2.new(1, -36, 1, 0), Text = "-",
 				TextTruncate = Enum.TextTruncate.AtEnd,
 			})
-			-- chevron dari dua batang
 			local chev = new("Frame", {
 				AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -12, 0.5, 0),
 				Size = UDim2.fromOffset(12, 8), BackgroundTransparency = 1,
@@ -766,21 +755,24 @@ local function buildHubUI()
 		return gb
 	end
 
-	-- ---------- window ----------
+	-- ---------- window (responsive + bisa di-resize) ----------
 	function L:CreateWindow(cfg)
 		cfg = cfg or {}
-		local baseSize = cfg.Size or UDim2.fromOffset(780, 470)
-		local curSize = baseSize
-		local TITLE_H = 54
-		local SIDE_W = 158
-		local W = { Tabs = {}, Active = nil }
+		local W = { Tabs = {}, Active = nil, Compact = false }
+		local MIN_W, MIN_H, BOT_H = 300, 230, 16
+		local TITLE_H, SIDE_W = 54, 158
+		local minimized, maxed, pre = false, false, nil
+		local want = cfg.Size or UDim2.fromOffset(780, 470)
+		local ss = screenSize()
+		local cw = math.clamp(math.min(want.X.Offset, ss.X * 0.96), MIN_W, math.max(MIN_W, ss.X - 12))
+		local ch = math.clamp(math.min(want.Y.Offset, ss.Y * 0.86), MIN_H, math.max(MIN_H, ss.Y - 12))
 		if cfg.ToggleKey then
 			pcall(function() L.MenuKey = Enum.KeyCode[cfg.ToggleKey] or L.MenuKey end)
 		end
 
 		local holder = new("Frame", {
-			Name = "Holder", AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5),
-			Size = baseSize, BorderSizePixel = 0, ClipsDescendants = true, ZIndex = 2,
+			Name = "Holder", Position = UDim2.fromOffset(math.floor((ss.X - cw) / 2), math.floor((ss.Y - ch) / 2)),
+			Size = UDim2.fromOffset(cw, ch), BorderSizePixel = 0, ClipsDescendants = true, ZIndex = 2,
 		}, gui)
 		bind(holder, "BackgroundColor3", cBg)
 		corner(holder, 16)
@@ -792,51 +784,44 @@ local function buildHubUI()
 		W.Holder = holder
 
 		-- title bar
-		local bar = new("Frame", {
-			Name = "TitleBar", Size = UDim2.new(1, 0, 0, TITLE_H), BorderSizePixel = 0,
-		}, holder)
+		local bar = new("Frame", { Name = "TitleBar", Size = UDim2.new(1, 0, 0, TITLE_H), BorderSizePixel = 0 }, holder)
 		bind(bar, "BackgroundColor3", cMain)
 		local barRule = new("Frame", {
-			AnchorPoint = Vector2.new(0, 1), Position = UDim2.fromScale(0, 1), Size = UDim2.new(1, 0, 0, 1),
-			BorderSizePixel = 0,
+			AnchorPoint = Vector2.new(0, 1), Position = UDim2.fromScale(0, 1), Size = UDim2.new(1, 0, 0, 1), BorderSizePixel = 0,
 		}, bar)
 		bind(barRule, "BackgroundColor3", cOutline)
 
-		local left = new("Frame", {
-			Size = UDim2.new(1, -150, 1, 0), BackgroundTransparency = 1,
-		}, bar)
-		padding(left, 18, 0, 0, 0)
+		local leftF = new("Frame", { Size = UDim2.new(1, -150, 1, 0), BackgroundTransparency = 1 }, bar)
+		padding(leftF, 14, 0, 0, 0)
 		new("UIListLayout", {
-			FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 12),
+			FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 10),
 			VerticalAlignment = Enum.VerticalAlignment.Center, SortOrder = Enum.SortOrder.LayoutOrder,
-		}, left)
-		-- logo: dua belah ketupat
-		local logo = new("Frame", { Size = UDim2.fromOffset(30, 30), BackgroundTransparency = 1, LayoutOrder = 1 }, left)
+		}, leftF)
+		local logo = new("Frame", { Size = UDim2.fromOffset(28, 28), BackgroundTransparency = 1, LayoutOrder = 1 }, leftF)
 		local d1 = new("Frame", {
-			AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromOffset(20, 20),
+			AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromOffset(19, 19),
 			BackgroundTransparency = 1, Rotation = 45,
 		}, logo)
 		corner(d1, 4)
-		local d1s = new("UIStroke", { Thickness = 2.5 }, d1)
-		bind(d1s, "Color", cSoft)
+		bind(new("UIStroke", { Thickness = 2.5 }, d1), "Color", cSoft)
 		local d2 = new("Frame", {
 			AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromOffset(8, 8),
 			BorderSizePixel = 0, Rotation = 45,
 		}, logo)
 		bind(d2, "BackgroundColor3", cSoft)
 		corner(d2, 2)
-		txt(left, {
+		local titleLbl = txt(leftF, {
 			Size = UDim2.new(0, 0, 1, 0), AutomaticSize = Enum.AutomaticSize.X, Text = cfg.Title or "Script Hub",
 			Font = Enum.Font.GothamBold, TextSize = 20, LayoutOrder = 2,
 		})
-		local sep = new("Frame", { Size = UDim2.fromOffset(1, 26), BorderSizePixel = 0, LayoutOrder = 3 }, left)
+		local sep = new("Frame", { Size = UDim2.fromOffset(1, 26), BorderSizePixel = 0, LayoutOrder = 3 }, leftF)
 		bind(sep, "BackgroundColor3", cOutline)
-		txt(left, {
+		local subLbl = txt(leftF, {
 			Size = UDim2.new(0, 0, 1, 0), AutomaticSize = Enum.AutomaticSize.X,
 			Text = cfg.Subtitle or "", TextSize = 13, LayoutOrder = 4, TextTruncate = Enum.TextTruncate.AtEnd,
 		}, cDim)
 
-		-- drag
+		-- drag title bar
 		local dragging, dragStart, startPos = false, nil, nil
 		conn(bar.InputBegan:Connect(function(input)
 			if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
@@ -846,7 +831,10 @@ local function buildHubUI()
 		conn(UIS.InputChanged:Connect(function(input)
 			if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
 				local d = input.Position - dragStart
-				holder.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X, startPos.Y.Scale, startPos.Y.Offset + d.Y)
+				local s = screenSize()
+				local x = math.clamp(startPos.X.Offset + d.X, -(cw - 90), math.max(0, s.X - 90))
+				local y = math.clamp(startPos.Y.Offset + d.Y, 0, math.max(0, s.Y - TITLE_H))
+				holder.Position = UDim2.fromOffset(x, y)
 			end
 		end))
 		conn(UIS.InputEnded:Connect(function(input)
@@ -857,7 +845,7 @@ local function buildHubUI()
 
 		-- window buttons
 		local ctrls = new("Frame", {
-			AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -14, 0.5, 0),
+			AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -10, 0.5, 0),
 			Size = UDim2.fromOffset(124, 34), BackgroundTransparency = 1,
 		}, bar)
 		new("UIListLayout", {
@@ -872,16 +860,16 @@ local function buildHubUI()
 			}, ctrls)
 			bind(b, "BackgroundColor3", cCtrl)
 			corner(b, 10)
-			local st = stroke(b, function() return L.OutlineColor:Lerp(L.AccentColor, 0.35) end)
+			stroke(b, function() return L.OutlineColor:Lerp(L.AccentColor, 0.35) end)
 			draw(b)
 			conn(b.MouseEnter:Connect(function() b.BackgroundColor3 = lighten(L.MainColor, 0.18) end))
 			conn(b.MouseLeave:Connect(function() b.BackgroundColor3 = cCtrl() end))
 			conn(b.MouseButton1Click:Connect(cb))
 			return b
 		end
-		local function barShape(parent, w, h, rot, px, py)
+		local function barShape(parent, w, h, rot)
 			local f = new("Frame", {
-				AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0.5, px or 0, 0.5, py or 0),
+				AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5),
 				Size = UDim2.fromOffset(w, h), BorderSizePixel = 0, Rotation = rot or 0,
 			}, parent)
 			bind(f, "BackgroundColor3", cFont)
@@ -890,48 +878,12 @@ local function buildHubUI()
 		end
 
 		local body = new("Frame", {
-			Name = "Body", Position = UDim2.fromOffset(0, TITLE_H), Size = UDim2.new(1, 0, 1, -TITLE_H),
+			Name = "Body", Position = UDim2.fromOffset(0, TITLE_H), Size = UDim2.new(1, 0, 1, -TITLE_H - BOT_H),
 			BackgroundTransparency = 1,
 		}, holder)
 
-		local minimized, maxed = false, false
-		function W:SetMinimized(v)
-			minimized = v and true or false
-			body.Visible = not minimized
-			holder.Size = minimized and UDim2.new(curSize.X.Scale, curSize.X.Offset, 0, TITLE_H) or curSize
-			if W.OnMinimized then safe(W.OnMinimized, minimized) end
-		end
-		function W:SetMaximized(v)
-			maxed = v and true or false
-			curSize = maxed and UDim2.fromOffset(baseSize.X.Offset + 150, baseSize.Y.Offset + 100) or baseSize
-			if not minimized then holder.Size = curSize end
-		end
-
-		winBtn("Minimize", 1, function(b) barShape(b, 12, 2.5) end, function() W:SetMinimized(not minimized) end)
-		winBtn("Maximize", 2, function(b)
-			local f = new("Frame", {
-				AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5),
-				Size = UDim2.fromOffset(12, 12), BackgroundTransparency = 1,
-			}, b)
-			corner(f, 2)
-			local s = new("UIStroke", { Thickness = 2.2 }, f)
-			bind(s, "Color", cFont)
-		end, function()
-			if minimized then W:SetMinimized(false) end
-			W:SetMaximized(not maxed)
-		end)
-		local closeBtn = winBtn("Close", 3, function(b)
-			barShape(b, 15, 2.5, 45)
-			barShape(b, 15, 2.5, -45)
-		end, function()
-			if W.OnClose then safe(W.OnClose) else L:Unload() end
-		end)
-		W.CloseButton = closeBtn
-
 		-- sidebar
-		local side = new("Frame", {
-			Name = "Sidebar", Size = UDim2.new(0, SIDE_W, 1, 0), BorderSizePixel = 0,
-		}, body)
+		local side = new("Frame", { Name = "Sidebar", Size = UDim2.new(0, SIDE_W, 1, 0), BorderSizePixel = 0 }, body)
 		bind(side, "BackgroundColor3", cSide)
 		local sideRule = new("Frame", {
 			AnchorPoint = Vector2.new(1, 0), Position = UDim2.fromScale(1, 0), Size = UDim2.new(0, 1, 1, 0), BorderSizePixel = 0,
@@ -942,10 +894,9 @@ local function buildHubUI()
 			BorderSizePixel = 0, ScrollBarThickness = 0, CanvasSize = UDim2.new(),
 			AutomaticCanvasSize = Enum.AutomaticSize.Y, ScrollingDirection = Enum.ScrollingDirection.Y,
 		}, side)
-		padding(tabList, 10, 12, 10, 8)
+		local tabPad = padding(tabList, 10, 12, 10, 8)
 		vlist(tabList, 4)
 
-		-- kartu status
 		local status = new("Frame", {
 			AnchorPoint = Vector2.new(0, 1), Position = UDim2.new(0, 10, 1, -10), Size = UDim2.new(1, -20, 0, 48),
 			BorderSizePixel = 0,
@@ -954,8 +905,7 @@ local function buildHubUI()
 		corner(status, 11)
 		stroke(status, cOutline)
 		local dot = new("Frame", {
-			AnchorPoint = Vector2.new(0, 0.5), Position = UDim2.new(0, 14, 0.5, 0), Size = UDim2.fromOffset(10, 10),
-			BorderSizePixel = 0,
+			AnchorPoint = Vector2.new(0, 0.5), Position = UDim2.new(0, 14, 0.5, 0), Size = UDim2.fromOffset(10, 10), BorderSizePixel = 0,
 		}, status)
 		corner(dot, 5)
 		local stText = txt(status, {
@@ -963,8 +913,7 @@ local function buildHubUI()
 			Font = Enum.Font.GothamBold, TextSize = 13,
 		}, cSoft)
 		txt(status, {
-			Position = UDim2.fromOffset(32, 25), Size = UDim2.new(1, -38, 0, 16), Text = "v" .. tostring(cfg.Version or "1.0"),
-			TextSize = 11,
+			Position = UDim2.fromOffset(32, 25), Size = UDim2.new(1, -38, 0, 16), Text = "v" .. tostring(cfg.Version or "1.0"), TextSize = 11,
 		}, cDim)
 		local statusOn = false
 		bind(dot, "BackgroundColor3", function() return statusOn and Color3.fromRGB(80, 220, 140) or L.AccentColor end)
@@ -974,12 +923,142 @@ local function buildHubUI()
 			dot.BackgroundColor3 = statusOn and Color3.fromRGB(80, 220, 140) or L.AccentColor
 		end
 
-		-- konten
 		local content = new("Frame", {
 			Name = "Content", Position = UDim2.fromOffset(SIDE_W, 0), Size = UDim2.new(1, -SIDE_W, 1, 0),
 			BackgroundTransparency = 1,
 		}, body)
 
+		-- grip resize (bar paling bawah)
+		local grip = new("TextButton", {
+			Name = "Grip", AnchorPoint = Vector2.new(0, 1), Position = UDim2.fromScale(0, 1),
+			Size = UDim2.new(1, 0, 0, BOT_H), BorderSizePixel = 0, Text = "", AutoButtonColor = false, ZIndex = 10,
+		}, holder)
+		bind(grip, "BackgroundColor3", cMain)
+		local gRule = new("Frame", { Size = UDim2.new(1, 0, 0, 1), BorderSizePixel = 0, ZIndex = 11 }, grip)
+		bind(gRule, "BackgroundColor3", cOutline)
+		local gPill = new("Frame", {
+			AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.55), Size = UDim2.fromOffset(46, 4),
+			BorderSizePixel = 0, ZIndex = 11,
+		}, grip)
+		bind(gPill, "BackgroundColor3", cSoft)
+		corner(gPill, 2)
+		local gCorner = new("Frame", {
+			AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -8, 0.55, 0), Size = UDim2.fromOffset(10, 4),
+			BorderSizePixel = 0, ZIndex = 11, Rotation = -35,
+		}, grip)
+		bind(gCorner, "BackgroundColor3", cSoft)
+		corner(gCorner, 2)
+		attachTip(grip, "Tarik untuk mengubah ukuran menu")
+
+		-- ---------- layout responsive ----------
+		function W:Layout()
+			local compact = cw < 620
+			TITLE_H = compact and 42 or 54
+			SIDE_W = compact and 54 or 158
+			bar.Size = UDim2.new(1, 0, 0, TITLE_H)
+			body.Position = UDim2.fromOffset(0, TITLE_H)
+			body.Size = UDim2.new(1, 0, 1, -TITLE_H - BOT_H)
+			side.Size = UDim2.new(0, SIDE_W, 1, 0)
+			content.Position = UDim2.fromOffset(SIDE_W, 0)
+			content.Size = UDim2.new(1, -SIDE_W, 1, 0)
+			tabList.Size = UDim2.new(1, 0, 1, compact and 0 or -70)
+			tabPad.PaddingLeft = UDim.new(0, compact and 6 or 10)
+			tabPad.PaddingRight = UDim.new(0, compact and 6 or 10)
+			status.Visible = not compact
+			subLbl.Visible = not compact
+			titleLbl.TextSize = compact and 17 or 20
+			leftF.Size = UDim2.new(1, compact and -128 or -150, 1, 0)
+			if compact ~= W._lc then
+				W._lc = compact
+				W.Compact = compact
+				for _, t in ipairs(W.Tabs) do t:_layout(compact) end
+			end
+			local bw, bh = cw - SIDE_W, ch - TITLE_H - BOT_H
+			for _, f in ipairs(L._resize) do safe(f, bw, bh, compact) end
+		end
+
+		function W:SetSize(w, h)
+			local s = screenSize()
+			local px, py = math.max(holder.Position.X.Offset, 0), math.max(holder.Position.Y.Offset, 0)
+			cw = math.clamp(w, MIN_W, math.max(MIN_W, s.X - px - 2))
+			ch = math.clamp(h, MIN_H, math.max(MIN_H, s.Y - py - 2))
+			holder.Size = minimized and UDim2.fromOffset(cw, TITLE_H) or UDim2.fromOffset(cw, ch)
+			W:Layout()
+		end
+
+		local rs, rsStart, rsSize = false, nil, nil
+		conn(grip.InputBegan:Connect(function(input)
+			if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+				rs, rsStart, rsSize = true, input.Position, Vector2.new(cw, ch)
+			end
+		end))
+		conn(UIS.InputChanged:Connect(function(input)
+			if rs and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+				local d = input.Position - rsStart
+				if not maxed then W:SetSize(rsSize.X + d.X, rsSize.Y + d.Y) end
+			end
+		end))
+		conn(UIS.InputEnded:Connect(function(input)
+			if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+				rs = false
+			end
+		end))
+		conn(gui:GetPropertyChangedSignal("AbsoluteSize"):Connect(function()
+			local s = screenSize()
+			if maxed then
+				cw, ch = s.X - 12, s.Y - 12
+				holder.Position = UDim2.fromOffset(6, 6)
+			else
+				local x = math.clamp(holder.Position.X.Offset, -(cw - 90), math.max(0, s.X - 90))
+				local y = math.clamp(holder.Position.Y.Offset, 0, math.max(0, s.Y - TITLE_H))
+				holder.Position = UDim2.fromOffset(x, y)
+			end
+			W:SetSize(cw, ch)
+		end))
+
+		function W:SetMinimized(v)
+			minimized = v and true or false
+			body.Visible = not minimized
+			grip.Visible = not minimized
+			holder.Size = minimized and UDim2.fromOffset(cw, TITLE_H) or UDim2.fromOffset(cw, ch)
+			if W.OnMinimized then safe(W.OnMinimized, minimized) end
+		end
+		function W:SetMaximized(v)
+			v = v and true or false
+			if v == maxed then return end
+			maxed = v
+			local s = screenSize()
+			if v then
+				pre = { cw, ch, holder.Position }
+				holder.Position = UDim2.fromOffset(6, 6)
+				cw, ch = s.X - 12, s.Y - 12
+			else
+				if pre then cw, ch, holder.Position = pre[1], pre[2], pre[3] end
+			end
+			holder.Size = minimized and UDim2.fromOffset(cw, TITLE_H) or UDim2.fromOffset(cw, ch)
+			W:Layout()
+		end
+
+		winBtn("Minimize", 1, function(b) barShape(b, 12, 2.5) end, function() W:SetMinimized(not minimized) end)
+		winBtn("Maximize", 2, function(b)
+			local f = new("Frame", {
+				AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5),
+				Size = UDim2.fromOffset(12, 12), BackgroundTransparency = 1,
+			}, b)
+			corner(f, 2)
+			bind(new("UIStroke", { Thickness = 2.2 }, f), "Color", cFont)
+		end, function()
+			if minimized then W:SetMinimized(false) end
+			W:SetMaximized(not maxed)
+		end)
+		W.CloseButton = winBtn("Close", 3, function(b)
+			barShape(b, 15, 2.5, 45)
+			barShape(b, 15, 2.5, -45)
+		end, function()
+			if W.OnClose then safe(W.OnClose) else L:Unload() end
+		end)
+
+		-- ---------- tabs ----------
 		function W:AddTab(name, topts)
 			local tab = { Name = name }
 			local split = (topts and topts.Split) or 0.5
@@ -992,9 +1071,7 @@ local function buildHubUI()
 			bind(tb, "BackgroundColor3", cAccent)
 			corner(tb, 12)
 			local grad = new("UIGradient", { Enabled = false, Rotation = 0 }, tb)
-			bind(grad, "Color", function()
-				return ColorSequence.new(L.AccentColor, lighten(L.AccentColor, 0.22))
-			end)
+			bind(grad, "Color", function() return ColorSequence.new(L.AccentColor, lighten(L.AccentColor, 0.22)) end)
 			local tbStroke = new("UIStroke", { Thickness = 1, Transparency = 1, ApplyStrokeMode = Enum.ApplyStrokeMode.Border }, tb)
 			bind(tbStroke, "Color", cSoft)
 			local ic, setIcon = iconFrame(tb, ICON_BY_TAB[name] or "info")
@@ -1009,28 +1086,65 @@ local function buildHubUI()
 			}, content)
 			tab.Container = container
 
-			local function column(xs, xo, ws)
+			local function column()
 				local sc = new("ScrollingFrame", {
-					Position = UDim2.new(xs, xo, 0, 12), Size = UDim2.new(ws, -17, 1, -24),
-					BackgroundTransparency = 1, BorderSizePixel = 0, ScrollBarThickness = 4, CanvasSize = UDim2.new(),
-					AutomaticCanvasSize = Enum.AutomaticSize.Y, ScrollingDirection = Enum.ScrollingDirection.Y,
+					Size = UDim2.new(0.5, -17, 1, -24), BackgroundTransparency = 1, BorderSizePixel = 0,
+					ScrollBarThickness = 4, CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y,
+					ScrollingDirection = Enum.ScrollingDirection.Y,
 				}, container)
 				bind(sc, "ScrollBarImageColor3", cAccent)
 				padding(sc, 0, 0, 8, 0)
 				vlist(sc, 12)
 				return sc
 			end
-			local colL, colR = column(0, 12, split), column(split, 5, 1 - split)
-			local nL, nR = 0, 0
-			function tab:AddLeftGroupbox(title) nL += 1 return makeGroupbox(colL, title, nL) end
-			function tab:AddRightGroupbox(title) nR += 1 return makeGroupbox(colR, title, nR) end
+			local colL, colR = column(), column()
+			local gbs, nL, nR = {}, 0, 0
+
+			function tab:_layout(compact)
+				tb.Size = UDim2.new(1, 0, 0, compact and 38 or 40)
+				ic.Position = UDim2.fromOffset(compact and 10 or 12, compact and 8 or 9)
+				tl.Visible = not compact
+				if compact then
+					colR.Visible = false
+					colL.Position = UDim2.new(0, 6, 0, 8)
+					colL.Size = UDim2.new(1, -8, 1, -16)
+					for _, g in ipairs(gbs) do
+						g[1].Parent = colL
+						g[1].LayoutOrder = (g[2] == "L") and g[3] or (1000 + g[3])
+					end
+				else
+					colR.Visible = true
+					colL.Position = UDim2.new(0, 12, 0, 12)
+					colL.Size = UDim2.new(split, -17, 1, -24)
+					colR.Position = UDim2.new(split, 5, 0, 12)
+					colR.Size = UDim2.new(1 - split, -17, 1, -24)
+					for _, g in ipairs(gbs) do
+						g[1].Parent = (g[2] == "L") and colL or colR
+						g[1].LayoutOrder = g[3]
+					end
+				end
+			end
+			function tab:AddLeftGroupbox(title)
+				nL += 1
+				local g = makeGroupbox(colL, title, nL)
+				gbs[#gbs + 1] = { g.Frame, "L", nL }
+				tab:_layout(W.Compact)
+				return g
+			end
+			function tab:AddRightGroupbox(title)
+				nR += 1
+				local g = makeGroupbox(colR, title, nR)
+				gbs[#gbs + 1] = { g.Frame, "R", nR }
+				tab:_layout(W.Compact)
+				return g
+			end
 
 			function tab:SetActive(on)
 				container.Visible = on
 				tb.BackgroundTransparency = on and 0 or 1
 				grad.Enabled = on
 				tbStroke.Transparency = on and 0.35 or 1
-				local col = on and Color3.new(1, 1, 1) or L.AccentColor:Lerp(Color3.new(1, 1, 1), 0.38)
+				local col = on and Color3.new(1, 1, 1) or lighten(L.AccentColor, 0.38)
 				tl.TextColor3 = col
 				setIcon(col)
 				tab._active = on
@@ -1039,7 +1153,6 @@ local function buildHubUI()
 				for _, t in ipairs(W.Tabs) do t:SetActive(t == tab) end
 				W.Active = tab
 			end
-			-- warna tab tidak aktif ikut tema
 			L._reg[#L._reg + 1] = { tl, "TextColor3", function()
 				return tab._active and Color3.new(1, 1, 1) or lighten(L.AccentColor, 0.38)
 			end }
@@ -1049,15 +1162,12 @@ local function buildHubUI()
 			end }
 
 			conn(tb.MouseButton1Click:Connect(function() tab:ShowTab() end))
-			conn(tb.MouseEnter:Connect(function()
-				if not tab._active then tb.BackgroundTransparency = 0.85 end
-			end))
-			conn(tb.MouseLeave:Connect(function()
-				if not tab._active then tb.BackgroundTransparency = 1 end
-			end))
+			conn(tb.MouseEnter:Connect(function() if not tab._active then tb.BackgroundTransparency = 0.85 end end))
+			conn(tb.MouseLeave:Connect(function() if not tab._active then tb.BackgroundTransparency = 1 end end))
 
 			W.Tabs[#W.Tabs + 1] = tab
 			tab:SetActive(false)
+			tab:_layout(W.Compact)
 			if #W.Tabs == 1 then tab:ShowTab() end
 			return tab
 		end
@@ -1066,9 +1176,7 @@ local function buildHubUI()
 			if v == nil then v = not L.Toggled end
 			L.Toggled = v
 			holder.Visible = v
-			if not v then
-				tip.Visible = false
-			end
+			if not v then tip.Visible = false end
 		end
 		L._window = W
 		conn(UIS.InputBegan:Connect(function(input, gp)
@@ -1077,19 +1185,30 @@ local function buildHubUI()
 				W:Toggle()
 			end
 		end))
+
+		-- tombol cepat buka/tutup menu (berguna di mobile)
+		local fab = new("TextButton", {
+			Name = "Fab", Size = UDim2.fromOffset(36, 36), Position = UDim2.fromOffset(10, 96), AutoButtonColor = false,
+			Text = "SS", Font = Enum.Font.GothamBold, TextSize = 13, BorderSizePixel = 0, BackgroundTransparency = 0.12, ZIndex = 40,
+		}, gui)
+		bind(fab, "BackgroundColor3", cAccent)
+		fab.TextColor3 = Color3.new(1, 1, 1)
+		corner(fab, 18)
+		stroke(fab, cOutline)
+		conn(fab.MouseButton1Click:Connect(function() W:Toggle() end))
+		L.Fab = fab
+
 		holder.Visible = cfg.AutoShow ~= false
 		L.Toggled = holder.Visible
+		W:Layout()
 		return W
 	end
 
 	function L:Toggle(v)
 		if L._window then L._window:Toggle(v) end
 	end
-
-	function L:OnUnload(fn)
-		L._unload[#L._unload + 1] = fn
-	end
-
+	function L:OnResize(fn) L._resize[#L._resize + 1] = fn end
+	function L:OnUnload(fn) L._unload[#L._unload + 1] = fn end
 	function L:Unload()
 		if L.Unloaded then return end
 		L.Unloaded = true
@@ -1097,7 +1216,6 @@ local function buildHubUI()
 		for _, c in ipairs(L._conns) do pcall(function() c:Disconnect() end) end
 		pcall(function() L.ScreenGui:Destroy() end)
 	end
-
 	function L:SetStatus() end -- diganti saat window dibuat
 
 	return L
@@ -1175,7 +1293,6 @@ local function identOf(s)
 	return s
 end
 
--- literal satu baris (ringkas)
 local function lit(v, depth)
 	depth = depth or 0
 	local t = typeof(v)
@@ -1218,7 +1335,6 @@ local function lit(v, depth)
 	return "<" .. t .. ">"
 end
 
--- source Lua multi-baris (untuk Copy / Save)
 local function luaSrc(v, indent, depth, seen)
 	local t = typeof(v)
 	if t == "table" then
@@ -1250,7 +1366,6 @@ local function luaSrc(v, indent, depth, seen)
 	return lit(v)
 end
 
--- salinan data (tabel dalam); buffer disimpan apa adanya
 local function deepCopy(v, depth, seen)
 	depth = depth or 0
 	if typeof(v) ~= "table" then return v end
@@ -1267,7 +1382,6 @@ local function deepCopy(v, depth, seen)
 	return out
 end
 
--- pohon bertipe (mudah dibaca)
 local function tree(v, name, ind, out, depth)
 	local p = string.rep("  ", ind)
 	local t = typeof(v)
@@ -1287,6 +1401,17 @@ local function tree(v, name, ind, out, depth)
 	else
 		out[#out + 1] = ("%s%s: %s = %s"):format(p, name, t, lit(v))
 	end
+end
+
+local function safeName(s)
+	return (ascii(s ~= "" and s or "view"):gsub("[^%w_%-]", "_"))
+end
+
+local function mdEscape(s) return (tostring(s):gsub("|", "\\|"):gsub("\n", " ")) end
+
+local function clipLine(s, n)
+	if #s > n then return s:sub(1, n - 3) .. "..." end
+	return s
 end
 
 ------------------------------------------------------------------
@@ -1406,7 +1531,6 @@ local function flatten(node, path, rows, optional)
 	if node.item then flatten(node.item, path .. "[]", rows, false) end
 end
 
--- tebakan definisi ByteNet dari data observed
 local function numExpr(node)
 	local s = node.num
 	if not s then return "ByteNet.float64" end
@@ -1462,9 +1586,12 @@ end
 -- STATE & REGISTRY
 ------------------------------------------------------------------
 local state = {
-	active = false, dirty = true, listDirty = true, view = "full", selected = nil,
-	filter = "", auto = true, logLines = 60, autoScan = false, t0 = nil, lastScan = 0,
+	active = false, dirty = true, logDirty = true, listDirty = true, view = "full",
+	selected = nil, selectedSub = nil, filter = "", auto = true, logLines = 120,
+	logDetail = false, autoScan = false, autoSave = false, t0 = nil, lastScan = 0, lastSave = 0,
 }
+local function markDirty() state.dirty = true state.logDirty = true end
+
 local muted = {}
 local entries, byObj, byId, byName = {}, {}, {}, {}
 local Store = { feed = {}, log = {}, chat = {} }
@@ -1472,10 +1599,11 @@ local Raw = { reliable = { n = 0, bytes = 0 }, unreliable = { n = 0, bytes = 0 }
 local Subs = {}
 local chatConn
 local remoteConns = {}
+local remoteList = {}
 local remotesFound = 0
 
 local logCfg = {
-	dir = "Semua", cat = "Semua", chan = "Semua", name = "",
+	dir = "Semua", cat = "Semua", chan = "Semua", pkt = "Semua", sub = "Semua", name = "", text = "",
 	seq = 0, dropped = 0, moveT = 0, moveN = 0,
 	chatKeys = { "chat", "msg", "message", "say", "talk", "whisper", "emote", "shout", "speak" },
 	moveKeys = { "move", "walk", "cframe", "velocity", "jump", "teleport", "dash", "sprint", "position" },
@@ -1488,9 +1616,9 @@ local function matchAny(s, keys)
 	return false
 end
 
-local function classify(name, data)
-	local lname = tostring(name or ""):lower()
-	if lname ~= "" then
+local function classify(name, data, sub)
+	local lname = (tostring(name or "") .. " " .. tostring(sub or "")):lower()
+	if lname ~= " " then
 		if matchAny(lname, logCfg.chatKeys) then return "chat" end
 		if matchAny(lname, logCfg.moveKeys) then return "movement" end
 	end
@@ -1539,13 +1667,81 @@ local function extractChat(data)
 end
 
 ------------------------------------------------------------------
+-- SUB-PACKET: satu packet ByteNet membawa banyak jenis pesan
+-- (mis. { packet = "message", ... } atau { "Move", ... }).
+-- Field pembeda dicari dari daftar kunci umum (urutan = prioritas).
+------------------------------------------------------------------
+local DISC_ORDER = {
+	"packet", "type", "action", "act", "event", "evt", "cmd", "command", "request", "req",
+	"kind", "op", "opcode", "method", "name", "message", "msg", "id", "t", "a", "k",
+}
+local DISC_RANK = {}
+for i, k in ipairs(DISC_ORDER) do DISC_RANK[k] = i end
+
+local function subOf(data)
+	if type(data) ~= "table" then return nil, nil end
+	local bestRank, bestVal, bestKey
+	for k, v in next, data do
+		if type(k) == "string" then
+			local rank = DISC_RANK[k:lower()]
+			if rank and (not bestRank or rank < bestRank) then
+				local tv, val = type(v), nil
+				if tv == "string" then
+					if #v > 0 and #v <= 40 and v:match("^[%w_%.%-:/]+$") then val = v end
+				elseif tv == "number" then
+					if v % 1 == 0 and v >= 0 and v <= 65535 then val = fnum(v) end
+				end
+				if val then bestRank, bestVal, bestKey = rank, val, k end
+			end
+		end
+	end
+	if bestVal then return bestVal, bestKey end
+	local first = rawget(data, 1)
+	if type(first) == "string" and #first > 0 and #first <= 40 and first:match("^[%a_][%w_%.%-:/]*$") then
+		return first, "[1]"
+	end
+	return nil, nil
+end
+
+local function sortedSubNames(e)
+	local names = {}
+	for n in pairs(e.subs) do names[#names + 1] = n end
+	table.sort(names, function(a, b)
+		local na, nb = e.subs[a].n, e.subs[b].n
+		if na ~= nb then return na > nb end
+		return a < b
+	end)
+	return names
+end
+
+local function recordSub(e, sub, skey, dir, ch, data, cat)
+	e.discKey = e.discKey or skey
+	local s = e.subs[sub]
+	if not s then
+		if e.subCount >= CFG.SubCap then e.subOver = (e.subOver or 0) + 1 return end
+		s = { name = sub, n = 0, inN = 0, outN = 0, R = 0, U = 0, learned = 0, samples = {}, first = os.date("%H:%M:%S"), cat = cat }
+		e.subs[sub] = s
+		e.subCount += 1
+	end
+	s.n += 1
+	if dir == "IN" then s.inN += 1 else s.outN += 1 end
+	if ch == "reliable" then s.R += 1 elseif ch == "unreliable" then s.U += 1 end
+	s.last = os.date("%H:%M:%S")
+	s.learned += 1
+	if s.learned <= 150 or s.learned % 20 == 0 then s.schema = learn(s.schema, data) end
+	local now = os.clock()
+	if #s.samples < 3 or now - (s.lastSample or 0) >= 0.5 then
+		s.lastSample = now
+		s.samples[#s.samples + 1] = { dir = dir, chan = ch, time = os.date("%H:%M:%S"), data = deepCopy(data) }
+		while #s.samples > CFG.SubSamples do table.remove(s.samples, 1) end
+	end
+end
+
+------------------------------------------------------------------
 -- CHANNEL (reliable / unreliable)
 ------------------------------------------------------------------
 local Chan = { last = nil, t = 0, fresh = false, pending = {} }
 
--- e.chan   : channel dari definisi packet (declared)
--- e.outR/U : OUT pasti dari hook process.client
--- e.vR/vU  : suara heuristik dari RemoteEvent (IN)
 local function chanInfo(e)
 	if e.chan then return e.chan, "declared" end
 	local r, u = e.outR, e.outU
@@ -1569,8 +1765,7 @@ local function chanText(e)
 	return c:upper() .. " (" .. src .. ")"
 end
 
-local function recordLog(e, dir, data, ch)
-	local cat = classify(e.short, data)
+local function recordLog(e, dir, data, ch, sub, cat)
 	local now = os.clock()
 	if cat == "movement" and CFG.MoveCap > 0 then
 		if now - logCfg.moveT >= 1 then logCfg.moveT, logCfg.moveN = now, 0 end
@@ -1580,7 +1775,7 @@ local function recordLog(e, dir, data, ch)
 	logCfg.seq += 1
 	local rec = {
 		n = logCfg.seq, time = os.date("%H:%M:%S"), dir = dir, name = e.short, id = e.id,
-		chan = ch, cat = cat, data = deepCopy(data),
+		chan = ch, cat = cat, sub = sub, data = deepCopy(data),
 	}
 	local L = Store.log
 	L[#L + 1] = rec
@@ -1607,7 +1802,7 @@ local function connectChatService()
 			local C = Store.chat
 			C[#C + 1] = { n = 0, time = os.date("%H:%M:%S"), dir = "IN", player = src and src.Name or "?", message = tostring(m.Text), packet = "TextChatService" }
 			while #C > CFG.LogMax do table.remove(C, 1) end
-			state.dirty = true
+			markDirty()
 		end)
 	end)
 end
@@ -1667,7 +1862,6 @@ local function findPacketId(obj)
 	return nil
 end
 
--- cari string "reliable"/"unreliable" di upvalue fungsi send (definisi reliabilityType)
 local function detectChannel(obj)
 	for _, key in ipairs(SEND_KEYS) do
 		local f = rawget(obj, key)
@@ -1686,6 +1880,7 @@ end
 local function resetEntry(e)
 	e.schema, e.samples, e.cIn, e.cOut, e.learned = nil, {}, 0, 0, 0
 	e.inR, e.inU, e.inX, e.outR, e.outU, e.outX, e.vR, e.vU = 0, 0, 0, 0, 0, 0, 0, 0
+	e.subs, e.subCount, e.discKey, e.subOver, e.cats = {}, 0, nil, nil, {}
 end
 
 local function indexEntry(e)
@@ -1710,17 +1905,16 @@ local function makeEntry(obj, id, name)
 	return e
 end
 
-local function publish(e, dir, ch, data)
+local function publish(e, dir, ch, data, sub)
 	for i = 1, #Subs do
 		local cb = Subs[i]
-		if cb then pcall(cb, e.short, dir, ch, data, e) end
+		if cb then pcall(cb, e.short, dir, ch, data, e, sub) end
 	end
 end
 
 local function observe(e, dir, data, chan)
 	if dir == "IN" then e.cIn += 1 else e.cOut += 1 end
 
-	-- tentukan channel
 	local ch, pending = chan, false
 	if dir == "OUT" then
 		ch = chan or e.chan
@@ -1738,7 +1932,11 @@ local function observe(e, dir, data, chan)
 
 	if muted[e.short] then return end
 
-	local rec = select(2, pcall(recordLog, e, dir, data, ch))
+	local sub, skey = subOf(data)
+	local cat = classify(e.short, data, sub)
+	e.cats[cat] = (e.cats[cat] or 0) + 1
+
+	local rec = select(2, pcall(recordLog, e, dir, data, ch, sub, cat))
 	if type(rec) ~= "table" then rec = nil end
 	if pending and remotesFound > 0 then
 		local P = Chan.pending
@@ -1751,25 +1949,25 @@ local function observe(e, dir, data, chan)
 	if e.learned <= CFG.LearnLimit or e.learned % 20 == 0 then
 		e.schema = learn(e.schema, data)
 	end
+	if sub then pcall(recordSub, e, sub, skey, dir, ch, data, cat) end
 	if now - (e.lastSample or 0) >= 0.1 or #e.samples < 3 then
 		e.lastSample = now
-		e.samples[#e.samples + 1] = { dir = dir, chan = ch, time = os.date("%H:%M:%S"), data = deepCopy(data) }
+		e.samples[#e.samples + 1] = { dir = dir, chan = ch, sub = sub, time = os.date("%H:%M:%S"), data = deepCopy(data) }
 		while #e.samples > CFG.MaxSamples do table.remove(e.samples, 1) end
 	end
 	if now - (e.lastFeed or 0) >= 0.15 then
 		e.lastFeed = now
 		local tag = ch and (ch == "reliable" and "R" or "U") or "?"
-		local line = ("[%s] %-3s %s %s %s"):format(os.date("%H:%M:%S"), dir, tag, e.short, lit(data))
+		local line = ("[%s] %-3s %s %s%s %s"):format(os.date("%H:%M:%S"), dir, tag, e.short, sub and ("[" .. sub .. "]") or "", lit(data))
 		if #line > 220 then line = line:sub(1, 217) .. "..." end
 		local f = Store.feed
 		f[#f + 1] = line
 		while #f > CFG.FeedMax do table.remove(f, 1) end
 	end
-	publish(e, dir, ch, data)
-	state.dirty = true
+	publish(e, dir, ch, data, sub)
+	markDirty()
 end
 
--- RemoteEvent ByteNet: dipakai untuk heuristik channel IN + statistik byte mentah
 local function resolvePending(chan)
 	local now = os.clock()
 	local P = Chan.pending
@@ -1801,13 +1999,17 @@ local function connectRemotes()
 	if #remoteConns > 0 then return #remoteConns end
 	local okD, desc = pcall(function() return ReplicatedStorage:GetDescendants() end)
 	if not okD then return 0 end
+	table.clear(remoteList)
 	for _, inst in ipairs(desc) do
-		local isRemote = inst:IsA("RemoteEvent") or inst:IsA("UnreliableRemoteEvent")
+		local isEvent = inst:IsA("RemoteEvent") or inst:IsA("UnreliableRemoteEvent")
+		local isRemote = isEvent or inst:IsA("RemoteFunction")
 		if isRemote then
 			local lname = inst.Name:lower()
 			local inBN = lname:find("bytenet", 1, true) or inst:FindFirstAncestor("ByteNet") ~= nil
-			if inBN then
-				local chan = (inst:IsA("UnreliableRemoteEvent") or lname:find("unreliable", 1, true)) and "unreliable" or "reliable"
+			local chan = (inst:IsA("UnreliableRemoteEvent") or lname:find("unreliable", 1, true)) and "unreliable" or "reliable"
+			local okP, path = pcall(function() return inst:GetFullName() end)
+			remoteList[#remoteList + 1] = { path = okP and path or inst.Name, class = inst.ClassName, bytenet = inBN and true or false, chan = chan }
+			if isEvent and inBN then
 				local ok, c = pcall(function()
 					return inst.OnClientEvent:Connect(function(...) onRemote(chan, ...) end)
 				end)
@@ -1854,7 +2056,6 @@ local function register(obj, name)
 	local id = findPacketId(obj)
 	local existing = id and byId[id]
 	if existing and not existing.obj then
-		-- placeholder dari hook OUT (id_N) digabung dengan objek asli
 		e = existing
 		e.obj = obj
 		byObj[obj] = e
@@ -1916,7 +2117,6 @@ local function scanPackets()
 	return #entries - before
 end
 
--- Hook OUT: process.client.sendReliable / sendUnreliable (id, writer, data)
 local function onOut(id, chan, data)
 	if not state.active then return end
 	local e = byId[id]
@@ -2065,7 +2265,6 @@ local function introspect(e)
 	local obj = e.obj
 	if not obj then return false end
 	local cands = {}
-
 	for _, key in ipairs({ "reader", "writer" }) do
 		local f = rawget(obj, key)
 		if type(f) == "function" then
@@ -2095,7 +2294,6 @@ local function introspect(e)
 			end
 		end
 	end
-
 	for _, dt in ipairs(cands) do
 		local ok, node = pcall(describeDT, dt)
 		if ok and node and node.kind ~= "?" then
@@ -2107,7 +2305,7 @@ local function introspect(e)
 end
 
 ------------------------------------------------------------------
--- LAPORAN
+-- LAPORAN / TABEL STRUCT
 ------------------------------------------------------------------
 local function sortedEntries()
 	local list = table.clone(entries)
@@ -2137,20 +2335,94 @@ local function declaredText(e)
 	return ("ByteNet.definePacket({\n\tvalue = %s,%s\n})"):format(declExpr(d, 1), relLine(e))
 end
 
+-- baris tabel struct (declared)
+local function declRows(node, path, rows, opt)
+	local p = path == "" and "(root)" or path
+	local k = node.kind
+	if node.cyclic then rows[#rows + 1] = { path = p, type = "(siklik)", opt = opt, detail = "" } return end
+	if k == "struct" then
+		rows[#rows + 1] = { path = p, type = "struct", opt = opt, detail = node.fields and "" or "field tidak terbaca" }
+		if node.fields then
+			for _, key in ipairs(sortedKeys(node.fields)) do
+				declRows(node.fields[key], path == "" and key or (path .. "." .. key), rows, false)
+			end
+		end
+	elseif k == "array" then
+		rows[#rows + 1] = { path = p, type = "array", opt = opt, detail = "" }
+		if node.inner then declRows(node.inner, path .. "[]", rows, false) end
+	elseif k == "optional" then
+		if node.inner then declRows(node.inner, path, rows, true)
+		else rows[#rows + 1] = { path = p, type = "optional", opt = true, detail = "" } end
+	elseif k == "map" then
+		rows[#rows + 1] = { path = p, type = "map", opt = opt, detail = "" }
+		if node.key then declRows(node.key, path .. "{key}", rows, false) end
+		if node.value then declRows(node.value, path .. "{value}", rows, false) end
+	else
+		rows[#rows + 1] = { path = p, type = k, opt = opt, detail = "" }
+	end
+end
+
+-- baris tabel struct (observed)
+local function schemaRows(schema)
+	local rows, out = {}, {}
+	flatten(schema, "", rows, false)
+	for _, r in ipairs(rows) do
+		out[#out + 1] = { path = r.path, type = typeLabel(r.node), opt = r.opt, detail = detail(r.node) }
+	end
+	return out
+end
+
+local function structRows(e)
+	local d = introspect(e)
+	if d then
+		local rows = {}
+		declRows(d, "", rows, false)
+		return "declared", rows
+	end
+	if e.schema then return "observed", schemaRows(e.schema) end
+	return nil, {}
+end
+
+local function rowsText(rows, ind)
+	ind = ind or ""
+	if #rows == 0 then return { ind .. "(tidak ada field)" } end
+	local w = 5
+	for _, r in ipairs(rows) do w = math.max(w, #r.path) end
+	w = math.min(w, 40)
+	local out = { ind .. pad("FIELD", w) .. "  " .. pad("TIPE", 12) .. "  " .. pad("WAJIB", 8) .. "  DETAIL" }
+	out[#out + 1] = ind .. string.rep("-", w + 30)
+	for _, r in ipairs(rows) do
+		out[#out + 1] = ind .. pad(r.path, w) .. "  " .. pad(r.type, 12) .. "  " .. pad(r.opt and "opsional" or "ya", 8) .. "  " .. (r.detail or "")
+	end
+	return out
+end
+
+local function mdRows(rows)
+	local o = { "| Field | Tipe | Wajib | Detail |", "| --- | --- | --- | --- |" }
+	for _, r in ipairs(rows) do
+		o[#o + 1] = ("| `%s` | %s | %s | %s |"):format(mdEscape(r.path), mdEscape(r.type), r.opt and "opsional" or "ya", mdEscape(r.detail or ""))
+	end
+	return o
+end
+
+local function fieldsInline(schema)
+	if not schema then return "?" end
+	if schema.fields then
+		local names = {}
+		for i, k in ipairs(sortedKeys(schema.fields)) do
+			if i > 8 then names[#names + 1] = "..." break end
+			names[#names + 1] = k .. ":" .. typeLabel(schema.fields[k])
+		end
+		return "{" .. table.concat(names, ", ") .. "}"
+	end
+	return typeLabel(schema)
+end
+
 local function observedText(e)
 	if not e.schema then
 		return "(belum ada data. Aktifkan Rekam Packet lalu lakukan aksinya di game)"
 	end
-	local rows = {}
-	flatten(e.schema, "", rows, false)
-	local w = 5
-	for _, r in ipairs(rows) do w = math.max(w, #r.path) end
-	w = math.min(w, 42)
-	local out = { pad("FIELD", w) .. "  " .. pad("TIPE", 12) .. "  " .. pad("WAJIB", 8) .. "  DETAIL" }
-	out[#out + 1] = string.rep("-", w + 40)
-	for _, r in ipairs(rows) do
-		out[#out + 1] = ("%s  %s  %s  %s"):format(pad(r.path, w), pad(typeLabel(r.node), 12), pad(r.opt and "opsional" or "ya", 8), detail(r.node))
-	end
+	local out = rowsText(schemaRows(e.schema), "")
 	out[#out + 1] = ("(dipelajari dari %d data)"):format(e.schema.n)
 	return table.concat(out, "\n")
 end
@@ -2163,7 +2435,7 @@ end
 local function lastSampleText(e)
 	local s = e.samples[#e.samples]
 	if not s then return "(belum ada sampel)" end
-	local out = { ("Sampel terakhir [%s/%s] %s"):format(s.dir, s.chan or "?", s.time) }
+	local out = { ("Sampel terakhir [%s/%s]%s %s"):format(s.dir, s.chan or "?", s.sub and (" sub=" .. s.sub) or "", s.time) }
 	tree(s.data, "data", 0, out, 0)
 	out[#out + 1] = ""
 	out[#out + 1] = "-- sebagai Lua:"
@@ -2174,7 +2446,7 @@ end
 local function samplesText(e)
 	if #e.samples == 0 then return "(belum ada sampel)" end
 	local list = {}
-	for i, s in ipairs(e.samples) do list[i] = { dir = s.dir, chan = s.chan, time = s.time, data = s.data } end
+	for i, s in ipairs(e.samples) do list[i] = { dir = s.dir, chan = s.chan, sub = s.sub, time = s.time, data = s.data } end
 	return ("-- %s : %d sampel terakhir\nreturn %s"):format(headerOf(e), #list, luaSrc(list, 0, 0, {}))
 end
 
@@ -2182,11 +2454,99 @@ local function countsLine(e)
 	return ("IN: R %d / U %d / ? %d | OUT: R %d / U %d / ? %d"):format(e.inR, e.inU, e.inX, e.outR, e.outU, e.outX)
 end
 
+local function topCat(e)
+	local best, bn = "-", 0
+	for c, n in pairs(e.cats) do if n > bn then best, bn = c, n end end
+	return best
+end
+
+-- ringkasan sub-packet suatu packet
+local function subsText(e)
+	if e.subCount == 0 then
+		return "(belum ada sub-packet terdeteksi. Sub-packet dikenali dari field pembeda seperti packet/type/action/message/cmd atau elemen pertama array berupa nama.)"
+	end
+	local o = {
+		("SUB-PACKET %s | field pembeda: %s | %d jenis%s"):format(
+			headerOf(e), tostring(e.discKey or "?"), e.subCount, e.subOver and (" (+" .. e.subOver .. " data jenis lain di luar batas)") or ""),
+		"",
+		("%s %s %s %s %s %s  %s"):format(pad("SUB", 24), pad("N", 6), pad("IN", 6), pad("OUT", 6), pad("CH", 3), pad("KAT", 9), "FIELD"),
+		string.rep("-", 90),
+	}
+	for _, name in ipairs(sortedSubNames(e)) do
+		local s = e.subs[name]
+		local ch = (s.R > 0 and s.U == 0) and "R" or ((s.U > 0 and s.R == 0) and "U" or ((s.R + s.U) > 0 and "R/U" or "?"))
+		o[#o + 1] = ("%s %s %s %s %s %s  %s"):format(pad(clipLine(name, 24), 24), pad(s.n, 6), pad(s.inN, 6), pad(s.outN, 6), pad(ch, 3), pad(s.cat or "-", 9), fieldsInline(s.schema))
+	end
+	return table.concat(o, "\n")
+end
+
+local function subDetailText(e, only)
+	if e.subCount == 0 then return subsText(e) end
+	local o = { subsText(e), "", string.rep("=", 70) }
+	for _, name in ipairs(sortedSubNames(e)) do
+		if not only or only == name then
+			local s = e.subs[name]
+			o[#o + 1] = ("[SUB] %s.%s = %s  | n=%d (IN %d / OUT %d) | kategori %s | terakhir %s"):format(e.short, tostring(e.discKey or "?"), name, s.n, s.inN, s.outN, s.cat or "-", s.last or "-")
+			if s.schema then
+				for _, l in ipairs(rowsText(schemaRows(s.schema), "  ")) do o[#o + 1] = l end
+				o[#o + 1] = "  -- tebakan ByteNet:"
+				for line in (nodeExpr(s.schema, 1) .. "\n"):gmatch("(.-)\n") do o[#o + 1] = "  -- " .. line end
+			end
+			local last = s.samples[#s.samples]
+			if last then o[#o + 1] = "  contoh [" .. last.dir .. "]: " .. lit(last.data) end
+			o[#o + 1] = ""
+		end
+	end
+	return table.concat(o, "\n")
+end
+
+local function subsAllText()
+	local o, any = { "SUB-PACKET SEMUA PACKET", string.rep("=", 70), "" }, false
+	for _, e in ipairs(sortedEntries()) do
+		if e.subCount > 0 then
+			any = true
+			o[#o + 1] = subsText(e)
+			o[#o + 1] = ""
+		end
+	end
+	if not any then return "(belum ada sub-packet terdeteksi. Rekam packet dan lakukan aksi di game)" end
+	return table.concat(o, "\n")
+end
+
+local function packetStructBlock(e, withSubs)
+	local src, rows = structRows(e)
+	local o = { ("[%s] %s | CH %s | struct: %s | IN %d OUT %d"):format(tostring(e.id or "?"), e.short, chanTag(e), src or "belum ada data", e.cIn, e.cOut) }
+	if src then
+		for _, l in ipairs(rowsText(rows, "    ")) do o[#o + 1] = l end
+	else
+		o[#o + 1] = "    (belum ada struct. Rekam packet atau tunggu data)"
+	end
+	if withSubs and e.subCount > 0 then
+		o[#o + 1] = ("    SUB-PACKET (key: %s, %d jenis):"):format(tostring(e.discKey or "?"), e.subCount)
+		for _, name in ipairs(sortedSubNames(e)) do
+			local s = e.subs[name]
+			o[#o + 1] = ("      * %s  n=%d (IN %d / OUT %d)  %s"):format(name, s.n, s.inN, s.outN, fieldsInline(s.schema))
+		end
+	end
+	return table.concat(o, "\n")
+end
+
+local function structTableText()
+	local list = sortedEntries()
+	if #list == 0 then return "(belum ada packet. Klik Scan atau aktifkan Rekam Packet)" end
+	local o = { "TABEL STRUCT - semua packet (declared bila terbaca, jika tidak observed)", string.rep("=", 70), "" }
+	for _, e in ipairs(list) do
+		o[#o + 1] = packetStructBlock(e, true)
+		o[#o + 1] = ""
+	end
+	return table.concat(o, "\n")
+end
+
 local function packetReport(e)
 	local o = {}
 	o[#o + 1] = "=================================================="
 	o[#o + 1] = "PACKET " .. headerOf(e)
-	o[#o + 1] = ("Nama lengkap: %s | sampel: %d"):format(e.name, #e.samples)
+	o[#o + 1] = ("Nama lengkap: %s | sampel: %d | kategori: %s"):format(e.name, #e.samples, topCat(e))
 	o[#o + 1] = ("Channel: %s | %s"):format(chanText(e), countsLine(e))
 	if e.chan and (e.outR + e.outU) > 0 then
 		local obs = e.outR >= e.outU and "reliable" or "unreliable"
@@ -2199,6 +2559,11 @@ local function packetReport(e)
 	o[#o + 1] = ""
 	o[#o + 1] = "[OBSERVED] dipelajari dari data nyata"
 	o[#o + 1] = observedText(e)
+	if e.subCount > 0 then
+		o[#o + 1] = ""
+		o[#o + 1] = "[SUB-PACKET]"
+		o[#o + 1] = subsText(e)
+	end
 	o[#o + 1] = ""
 	o[#o + 1] = "[TEBAKAN]"
 	o[#o + 1] = guessText(e)
@@ -2225,7 +2590,7 @@ local function structSummary(e)
 			desc = d.kind .. "<" .. d.inner.kind .. ">"
 		end
 	elseif e.schema then
-		desc = "(observed) " .. typeLabel(e.schema)
+		desc = "(observed) " .. fieldsInline(e.schema)
 	end
 	return desc
 end
@@ -2234,12 +2599,12 @@ local function summaryText()
 	local list = sortedEntries()
 	if #list == 0 then return "(belum ada packet. Klik Scan atau aktifkan Rekam Packet)" end
 	local out = {
-		("%s  %s  %s  %s  %s  %s"):format(pad("ID", 5), pad("NAMA", 22), pad("CH", 3), pad("IN", 6), pad("OUT", 6), "STRUCT (declared)"),
-		string.rep("-", 84),
-		"CH: R=reliable U=unreliable ~=heuristik ?=belum diketahui",
+		("%s  %s  %s  %s  %s  %s  %s"):format(pad("ID", 5), pad("NAMA", 22), pad("CH", 3), pad("IN", 6), pad("OUT", 6), pad("SUB", 4), "STRUCT"),
+		string.rep("-", 90),
+		"CH: R=reliable U=unreliable ~=heuristik ?=belum diketahui | SUB = jumlah sub-packet",
 	}
 	for _, e in ipairs(list) do
-		out[#out + 1] = ("%s  %s  %s  %s  %s  %s"):format(pad(e.id or "?", 5), pad(e.short, 22), pad(chanTag(e), 3), pad(e.cIn, 6), pad(e.cOut, 6), structSummary(e))
+		out[#out + 1] = ("%s  %s  %s  %s  %s  %s  %s"):format(pad(e.id or "?", 5), pad(e.short, 22), pad(chanTag(e), 3), pad(e.cIn, 6), pad(e.cOut, 6), pad(e.subCount, 4), structSummary(e))
 	end
 	return table.concat(out, "\n")
 end
@@ -2302,21 +2667,28 @@ local function allReport()
 	local out = {
 		"# StructScope - laporan semua packet",
 		("PlaceId: %s | dibuat: %s | packet: %d\n"):format(tostring(game.PlaceId), os.date("%Y-%m-%d %H:%M:%S"), #entries),
-		summaryText(),
-		"",
-		channelStatsText(),
-		"",
+		summaryText(), "", channelStatsText(), "", structTableText(), "",
 	}
 	for _, e in ipairs(sortedEntries()) do out[#out + 1] = packetReport(e) end
 	return table.concat(out, "\n")
 end
 
+------------------------------------------------------------------
+-- LOG (filter + format)
+------------------------------------------------------------------
 local function logPasses(r)
 	if logCfg.dir ~= "Semua" and r.dir ~= logCfg.dir then return false end
 	if logCfg.cat ~= "Semua" and r.cat ~= logCfg.cat then return false end
 	if logCfg.chan ~= "Semua" and (r.chan or "?") ~= logCfg.chan then return false end
+	if logCfg.pkt ~= "Semua" and r.name ~= logCfg.pkt then return false end
+	if logCfg.sub ~= "Semua" and r.sub ~= logCfg.sub then return false end
 	if logCfg.name ~= "" then
-		if not (tostring(r.name):lower():find(logCfg.name, 1, true) or tostring(r.id):find(logCfg.name, 1, true)) then return false end
+		local hay = (tostring(r.name) .. " " .. tostring(r.sub or "")):lower()
+		if not (hay:find(logCfg.name, 1, true) or tostring(r.id):find(logCfg.name, 1, true)) then return false end
+	end
+	if logCfg.text ~= "" then
+		if not r.search then r.search = lit(r.data):lower() end
+		if not r.search:find(logCfg.text, 1, true) then return false end
 	end
 	return true
 end
@@ -2329,21 +2701,40 @@ local function filteredLog()
 	return out
 end
 
-local function clipLine(s, n)
-	if #s > n then return s:sub(1, n - 3) .. "..." end
+local function recLine(r, detailed)
+	local key = detailed and "lineD" or "line"
+	if r[key] then return r[key] end
+	local tag = r.chan and (r.chan == "reliable" and "R" or "U") or "?"
+	local nm = r.name .. (r.sub and ("[" .. tostring(r.sub) .. "]") or "")
+	local head = ("#%d %s %-3s %s [%s] %s (id %s)"):format(r.n, r.time, r.dir, tag, r.cat, nm, tostring(r.id or "?"))
+	local s
+	if detailed then
+		local body = luaSrc(r.data, 1, 0, {})
+		if #body > 700 then body = body:sub(1, 700) .. "..." end
+		s = head .. "\n\t" .. body
+	else
+		s = clipLine(head .. " " .. lit(r.data), 230)
+	end
+	r[key] = s
 	return s
+end
+
+local function logHeader(list)
+	return ("Log: %d cocok filter dari %d total | tampil %d terakhir | movement dilewati %d | OUT=request IN=response/push"):format(
+		#list, #Store.log, math.min(#list, state.logLines), logCfg.dropped)
 end
 
 local function logText()
 	local list = filteredLog()
-	if #list == 0 then return "(belum ada log yang cocok filter. Aktifkan Rekam Packet lalu lakukan aksi di game)" end
-	local out = { ("Log packet: %d entri cocok filter (total %d) | movement dilewati: %d"):format(#list, #Store.log, logCfg.dropped), "" }
-	for i = math.max(1, #list - state.logLines + 1), #list do
-		local r = list[i]
-		local tag = r.chan and (r.chan == "reliable" and "R" or "U") or "?"
-		out[#out + 1] = clipLine(("#%d %s %-3s %s [%s] %s(%s) %s"):format(r.n, r.time, r.dir, tag, r.cat, r.name, tostring(r.id or "?"), lit(r.data)), 200)
+	local out = { logHeader(list), "" }
+	if #list == 0 then
+		out[#out + 1] = "(belum ada log yang cocok filter. Aktifkan Rekam Packet lalu lakukan aksi di game)"
+		return table.concat(out, "\n"), 0
 	end
-	return table.concat(out, "\n")
+	for i = math.max(1, #list - state.logLines + 1), #list do
+		out[#out + 1] = recLine(list[i], state.logDetail)
+	end
+	return table.concat(out, "\n"), #list
 end
 
 local function chatText()
@@ -2360,7 +2751,7 @@ end
 local function logToLua(list, title)
 	local plain = {}
 	for i, r in ipairs(list) do
-		plain[i] = { n = r.n, time = r.time, dir = r.dir, name = r.name, id = r.id, chan = r.chan, cat = r.cat, data = r.data }
+		plain[i] = { n = r.n, time = r.time, dir = r.dir, name = r.name, sub = r.sub, id = r.id, chan = r.chan, cat = r.cat, data = r.data }
 	end
 	return ("-- %s\n-- Dibuat: %s | Entri: %d | PlaceId: %s\nreturn %s\n"):format(
 		title, os.date("%Y-%m-%d %H:%M:%S"), #plain, tostring(game.PlaceId), luaSrc(plain, 0, 0, {}))
@@ -2376,9 +2767,11 @@ local function registryLua()
 	for _, e in ipairs(sortedEntries()) do
 		local d = introspect(e)
 		local c, src = chanInfo(e)
+		local subs = {}
+		for n, s in pairs(e.subs) do subs[n] = s.n end
 		list[#list + 1] = {
 			id = e.id, name = e.short, fullName = e.name, channel = c, channelSource = src,
-			countIn = e.cIn, countOut = e.cOut,
+			countIn = e.cIn, countOut = e.cOut, category = topCat(e), discriminator = e.discKey, subs = subs,
 			declared = d and declExpr(d, 0) or nil,
 			observed = e.schema and typeLabel(e.schema) or nil,
 		}
@@ -2419,6 +2812,12 @@ local function frameworkModule()
 		local expr, src = valueExpr(e, 4)
 		local c, csrc = chanInfo(e)
 		o[#o + 1] = ("\t\t\t-- id %s | struct: %s | channel: %s"):format(tostring(e.id or "?"), src, c and (c .. " (" .. csrc .. ")") or "tidak diketahui")
+		if e.subCount > 0 then
+			local names = sortedSubNames(e)
+			local shown = {}
+			for i = 1, math.min(#names, 12) do shown[i] = names[i] end
+			o[#o + 1] = ("\t\t\t-- sub-packet (%s): %s%s"):format(tostring(e.discKey or "?"), table.concat(shown, ", "), #names > 12 and ", ..." or "")
+		end
 		o[#o + 1] = ("\t\t\t%s = ByteNet.definePacket({"):format(key)
 		o[#o + 1] = ("\t\t\t\tvalue = %s,"):format(expr)
 		if c then o[#o + 1] = ("\t\t\t\treliabilityType = %q,"):format(c) end
@@ -2441,9 +2840,10 @@ local function templateText(e)
 		("local packet = SS.Packets.get(%q) -- objek ByteNet asli (listen / send)"):format(e.short),
 		"",
 		"-- 1) Pantau pasif lewat StructScope (IN dan OUT, tanpa mengubah apa pun)",
-		"local unsubscribe = SS.Subscribe(function(name, dir, chan, data)",
+		"local unsubscribe = SS.Subscribe(function(name, dir, chan, data, entry, sub)",
 		("\tif name ~= %q then return end"):format(e.short),
-		"\tprint(dir, chan, data)",
+		"\t-- sub = nilai field pembeda (mis. nama pesan), nil bila packet tidak punya sub-packet",
+		"\tprint(dir, chan, sub, data)",
 		"end)",
 		"-- unsubscribe() untuk berhenti",
 		"",
@@ -2454,11 +2854,18 @@ local function templateText(e)
 		"\tend)",
 		"end",
 		"",
-		"-- 3) Mengirim ke server (AKTIF, bukan bagian debugger). Struct dari sampel terakhir:",
 	}
+	if e.subCount > 0 then
+		o[#o + 1] = ("-- Sub-packet yang terdeteksi (field pembeda: %s):"):format(tostring(e.discKey or "?"))
+		for i, name in ipairs(sortedSubNames(e)) do
+			if i > 20 then o[#o + 1] = "--   ..." break end
+			o[#o + 1] = ("--   %s  %s"):format(name, fieldsInline(e.subs[name].schema))
+		end
+		o[#o + 1] = ""
+	end
+	o[#o + 1] = "-- 3) Mengirim ke server (AKTIF, bukan bagian debugger). Struct dari sampel terakhir:"
 	if s then
-		local src2 = luaSrc(s.data, 0, 0, {})
-		o[#o + 1] = "local sample = " .. src2
+		o[#o + 1] = "local sample = " .. luaSrc(s.data, 0, 0, {})
 		o[#o + 1] = "-- packet.send(sample)"
 	else
 		o[#o + 1] = "-- (belum ada sampel; rekam dulu)"
@@ -2477,7 +2884,8 @@ local DOC_INTRO = [==[
 - **Packet** = definisi pesan dengan `id` unik, struct data, dan channel.
 - **reliable** (default): lewat RemoteEvent. Urutan terjamin dan pasti sampai.
 - **unreliable**: lewat UnreliableRemoteEvent. Bisa hilang atau tidak berurutan, ukuran dibatasi. Cocok untuk data sering seperti posisi.
-- Arah **IN** = server ke client (listener). Arah **OUT** = client ke server (send).
+- Arah **IN** = server ke client (response / push). Arah **OUT** = client ke server (request).
+- **Sub-packet** = satu packet bisa membawa banyak jenis pesan, dibedakan lewat satu field (mis. `packet`, `type`, `action`, `message`).
 - Data yang dilihat debugger adalah hasil decode (table), bukan buffer mentah.
 
 ## Cara mengambil data dari StructScope untuk script baru
@@ -2486,21 +2894,13 @@ local DOC_INTRO = [==[
 local SS = getgenv().StructScope            -- StructScope harus sudah jalan
 
 local packet = SS.Packets.get("NamaPacket") -- objek ByteNet asli
-local info   = SS.Packets.info("NamaPacket")-- id, channel, struct, schema, counts
+local info   = SS.Packets.info("NamaPacket")-- id, channel, struct, schema, counts, subs
 
--- pantau semua packet (pasif)
-local off = SS.Subscribe(function(name, dir, chan, data)
-	print(name, dir, chan, data)
+-- pantau semua packet (pasif); sub = jenis pesan di dalam packet
+local off = SS.Subscribe(function(name, dir, chan, data, entry, sub)
+	print(name, sub, dir, chan, data)
 end)
 ```
-
-## Alur kerja membuat script baru
-
-1. Nyalakan **Rekam Packet**, lakukan aksi di game.
-2. Lihat struct di tab **Viewer** (Declared lebih akurat dari Observed).
-3. Pakai tab **Framework**: salin `Packets.lua`, template per packet, atau dokumentasi ini.
-4. Tulis script baru memakai `SS.Packets.get(...)` dan `SS.Subscribe(...)`.
-5. Cek kolom channel sebelum menulis ulang definisi: reliable dan unreliable tidak bisa dipertukarkan.
 
 ## Arti tanda channel
 
@@ -2511,28 +2911,23 @@ end)
 | ? | belum diketahui |
 ]==]
 
-local function mdEscape(s) return (tostring(s):gsub("|", "\\|")) end
-
 local function docsMarkdown()
 	local list = sortedEntries()
 	local o = {
-		"# Dokumentasi Packet ByteNet",
-		"",
+		"# Dokumentasi Packet ByteNet", "",
 		("- PlaceId: `%s`"):format(tostring(game.PlaceId)),
 		("- Dibuat: %s"):format(os.date("%Y-%m-%d %H:%M:%S")),
 		("- Jumlah packet: %d"):format(#list),
-		("- Dibuat oleh: StructScope v%s"):format(VERSION),
-		"",
-		"## Ringkasan packet",
-		"",
-		"| ID | Nama | Channel | Arah | IN | OUT | Struct |",
-		"| --- | --- | --- | --- | --- | --- | --- |",
+		("- Dibuat oleh: StructScope v%s"):format(VERSION), "",
+		"## Ringkasan packet", "",
+		"| ID | Nama | Channel | Arah | IN | OUT | Sub | Struct |",
+		"| --- | --- | --- | --- | --- | --- | --- | --- |",
 	}
 	for _, e in ipairs(list) do
 		local dirs = (e.cIn > 0 and e.cOut > 0) and "IN/OUT" or (e.cIn > 0 and "IN" or (e.cOut > 0 and "OUT" or "-"))
 		local c = chanInfo(e)
-		o[#o + 1] = ("| %s | `%s` | %s | %s | %d | %d | %s |"):format(
-			tostring(e.id or "?"), e.short, c or "?", dirs, e.cIn, e.cOut, mdEscape(structSummary(e)))
+		o[#o + 1] = ("| %s | `%s` | %s | %s | %d | %d | %d | %s |"):format(
+			tostring(e.id or "?"), e.short, c or "?", dirs, e.cIn, e.cOut, e.subCount, mdEscape(structSummary(e)))
 	end
 	o[#o + 1] = ""
 	o[#o + 1] = DOC_INTRO
@@ -2546,46 +2941,308 @@ local function docsMarkdown()
 		o[#o + 1] = ("- Channel: **%s**"):format(chanText(e))
 		o[#o + 1] = ("- %s"):format(countsLine(e))
 		o[#o + 1] = ""
-		o[#o + 1] = "**Declared**"
-		o[#o + 1] = ""
+		local src, rows = structRows(e)
+		if src then
+			o[#o + 1] = ("**Struct** (%s)"):format(src)
+			o[#o + 1] = ""
+			for _, l in ipairs(mdRows(rows)) do o[#o + 1] = l end
+			o[#o + 1] = ""
+		end
 		o[#o + 1] = "```lua"
 		o[#o + 1] = declaredText(e)
 		o[#o + 1] = "```"
-		if e.schema then
-			local rows = {}
-			flatten(e.schema, "", rows, false)
-			o[#o + 1] = ""
-			o[#o + 1] = ("**Observed** (dari %d data)"):format(e.schema.n)
-			o[#o + 1] = ""
-			o[#o + 1] = "| Field | Tipe | Wajib | Detail |"
-			o[#o + 1] = "| --- | --- | --- | --- |"
-			for _, r in ipairs(rows) do
-				o[#o + 1] = ("| `%s` | %s | %s | %s |"):format(mdEscape(r.path), mdEscape(typeLabel(r.node)), r.opt and "opsional" or "ya", mdEscape(detail(r.node)))
-			end
-		end
-		local s = e.samples[#e.samples]
-		if s then
-			o[#o + 1] = ""
-			o[#o + 1] = ("**Contoh data** (%s, %s)"):format(s.dir, s.chan or "?")
-			o[#o + 1] = ""
-			o[#o + 1] = "```lua"
-			o[#o + 1] = "return " .. luaSrc(s.data, 0, 0, {})
-			o[#o + 1] = "```"
-		end
 	end
 	return table.concat(o, "\n") .. "\n"
+end
+
+------------------------------------------------------------------
+-- DOCS FOLDER (Markdown rapi, dipisah per kategori)
+------------------------------------------------------------------
+local function pktFile(e)
+	return (e.id and string.format("%03d", e.id) or "xxx") .. "_" .. safeName(e.short)
+end
+
+local function mdLastSample(s)
+	if not s then return {} end
+	return { "", ("Contoh data (%s, %s):"):format(s.dir, s.chan or "?"), "", "```lua", "return " .. luaSrc(s.data, 0, 0, {}), "```" }
+end
+
+local function mdPacketDoc(e)
+	local o = {
+		("# %s (id %s)"):format(e.short, tostring(e.id or "?")), "",
+		("[Kembali ke overview](../overview.md)"), "",
+		("- Nama lengkap: `%s`"):format(e.name),
+		("- Channel: **%s**"):format(chanText(e)),
+		("- Kategori dominan: %s"):format(topCat(e)),
+		("- %s"):format(countsLine(e)),
+		("- Field pembeda sub-packet: %s | jumlah jenis: %d"):format(e.discKey and ("`" .. e.discKey .. "`") or "-", e.subCount), "",
+	}
+	local src, rows = structRows(e)
+	o[#o + 1] = ("## Struct (%s)"):format(src or "belum ada data")
+	o[#o + 1] = ""
+	if src then for _, l in ipairs(mdRows(rows)) do o[#o + 1] = l end else o[#o + 1] = "_Belum ada data. Lakukan aksi terkait di game dengan Rekam Packet aktif._" end
+	o[#o + 1] = ""
+	o[#o + 1] = "## Definisi ByteNet (declared)"
+	o[#o + 1] = ""
+	o[#o + 1] = "```lua"
+	o[#o + 1] = declaredText(e)
+	o[#o + 1] = "```"
+	if e.schema then
+		o[#o + 1] = ""
+		o[#o + 1] = "## Tebakan ByteNet (observed)"
+		o[#o + 1] = ""
+		o[#o + 1] = "```lua"
+		o[#o + 1] = guessText(e)
+		o[#o + 1] = "```"
+	end
+	if e.subCount > 0 then
+		o[#o + 1] = ""
+		o[#o + 1] = ("## Sub-packet (detail di [subpackets/%s.md](../subpackets/%s.md))"):format(pktFile(e), pktFile(e))
+		o[#o + 1] = ""
+		o[#o + 1] = "| Sub | N | IN | OUT | Kategori | Field |"
+		o[#o + 1] = "| --- | --- | --- | --- | --- | --- |"
+		for _, name in ipairs(sortedSubNames(e)) do
+			local s = e.subs[name]
+			o[#o + 1] = ("| `%s` | %d | %d | %d | %s | %s |"):format(mdEscape(name), s.n, s.inN, s.outN, s.cat or "-", mdEscape(fieldsInline(s.schema)))
+		end
+	end
+	for _, l in ipairs(mdLastSample(e.samples[#e.samples])) do o[#o + 1] = l end
+	return table.concat(o, "\n") .. "\n"
+end
+
+local function mdSubDoc(e)
+	local o = {
+		("# Sub-packet: %s (id %s)"):format(e.short, tostring(e.id or "?")), "",
+		("[Packet](../packets/%s.md) | [Kembali ke overview](../overview.md)"):format(pktFile(e)), "",
+		("Field pembeda: `%s` | %d jenis%s"):format(tostring(e.discKey or "?"), e.subCount, e.subOver and (" (+" .. e.subOver .. " data di luar batas)") or ""), "",
+	}
+	for _, name in ipairs(sortedSubNames(e)) do
+		local s = e.subs[name]
+		o[#o + 1] = ("## %s = `%s`"):format(tostring(e.discKey or "?"), name)
+		o[#o + 1] = ""
+		o[#o + 1] = ("- N: %d (IN %d / OUT %d) | channel R %d / U %d | kategori %s | pertama %s | terakhir %s"):format(s.n, s.inN, s.outN, s.R, s.U, s.cat or "-", s.first or "-", s.last or "-")
+		o[#o + 1] = ""
+		if s.schema then
+			for _, l in ipairs(mdRows(schemaRows(s.schema))) do o[#o + 1] = l end
+			o[#o + 1] = ""
+			o[#o + 1] = "```lua"
+			o[#o + 1] = nodeExpr(s.schema, 0)
+			o[#o + 1] = "```"
+		end
+		for _, l in ipairs(mdLastSample(s.samples[#s.samples])) do o[#o + 1] = l end
+		o[#o + 1] = ""
+	end
+	return table.concat(o, "\n") .. "\n"
+end
+
+local function mdOverview(list)
+	local o = {
+		"# Overview packet", "",
+		"| ID | Nama | Channel | Arah | IN | OUT | Sub | Kategori | Struct | Dokumen |",
+		"| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+	}
+	for _, e in ipairs(list) do
+		local dirs = (e.cIn > 0 and e.cOut > 0) and "IN/OUT" or (e.cIn > 0 and "IN" or (e.cOut > 0 and "OUT" or "-"))
+		local c = chanInfo(e)
+		o[#o + 1] = ("| %s | `%s` | %s | %s | %d | %d | %d | %s | %s | [packet](packets/%s.md) |"):format(
+			tostring(e.id or "?"), e.short, c or "?", dirs, e.cIn, e.cOut, e.subCount, topCat(e), mdEscape(structSummary(e)), pktFile(e))
+	end
+	return table.concat(o, "\n") .. "\n"
+end
+
+local function mdStructIndex(list)
+	local o = { "# Tabel struct semua packet", "", "Declared dipakai bila definisi ByteNet terbaca, jika tidak dipakai observed (dipelajari dari data nyata).", "" }
+	for _, e in ipairs(list) do
+		local src, rows = structRows(e)
+		o[#o + 1] = ("## %s (id %s) - %s"):format(e.short, tostring(e.id or "?"), src or "belum ada data")
+		o[#o + 1] = ""
+		o[#o + 1] = ("Channel: %s | [dokumen](../packets/%s.md)"):format(chanText(e), pktFile(e))
+		o[#o + 1] = ""
+		if src then for _, l in ipairs(mdRows(rows)) do o[#o + 1] = l end else o[#o + 1] = "_belum ada data_" end
+		o[#o + 1] = ""
+	end
+	return table.concat(o, "\n") .. "\n"
+end
+
+local function mdSubIndex(list)
+	local o = {
+		"# Sub-packet semua packet", "",
+		"| Packet | Field pembeda | Sub | N | IN | OUT | Kategori | Field | Dokumen |",
+		"| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+	}
+	for _, e in ipairs(list) do
+		for _, name in ipairs(sortedSubNames(e)) do
+			local s = e.subs[name]
+			o[#o + 1] = ("| `%s` | `%s` | `%s` | %d | %d | %d | %s | %s | [detail](%s.md) |"):format(
+				e.short, tostring(e.discKey or "?"), mdEscape(name), s.n, s.inN, s.outN, s.cat or "-", mdEscape(fieldsInline(s.schema)), pktFile(e))
+		end
+	end
+	if #o == 4 then o[#o + 1] = "| _belum ada sub-packet terdeteksi_ | | | | | | | | |" end
+	return table.concat(o, "\n") .. "\n"
+end
+
+local function mdCategory(cat, list)
+	local o = { ("# Kategori: %s"):format(cat), "", "| ID | Packet | Jumlah | Sub-packet kategori ini | Dokumen |", "| --- | --- | --- | --- | --- |" }
+	local any = false
+	for _, e in ipairs(list) do
+		local n = e.cats[cat] or 0
+		if n > 0 then
+			any = true
+			local subs = {}
+			for _, name in ipairs(sortedSubNames(e)) do
+				if e.subs[name].cat == cat then
+					subs[#subs + 1] = name
+					if #subs >= 15 then subs[#subs + 1] = "..." break end
+				end
+			end
+			o[#o + 1] = ("| %s | `%s` | %d | %s | [packet](../packets/%s.md) |"):format(tostring(e.id or "?"), e.short, n, mdEscape(table.concat(subs, ", ")), pktFile(e))
+		end
+	end
+	if not any then o[#o + 1] = "| _belum ada data_ | | | | |" end
+	return table.concat(o, "\n") .. "\n"
+end
+
+local function mdCoverage(list)
+	local noData, onlyIn, onlyOut, noChan, obsOnly, total = {}, {}, {}, {}, {}, #list
+	local subTotal = 0
+	for _, e in ipairs(list) do
+		subTotal += e.subCount
+		if e.cIn + e.cOut == 0 then noData[#noData + 1] = e.short
+		elseif e.cOut == 0 then onlyIn[#onlyIn + 1] = e.short
+		elseif e.cIn == 0 then onlyOut[#onlyOut + 1] = e.short end
+		if not chanInfo(e) then noChan[#noChan + 1] = e.short end
+		if not introspect(e) then obsOnly[#obsOnly + 1] = e.short end
+	end
+	local function block(title, items, hint)
+		local o = { "## " .. title .. (" (%d)"):format(#items), "" }
+		if hint then o[#o + 1] = "_" .. hint .. "_" o[#o + 1] = "" end
+		if #items == 0 then o[#o + 1] = "- (tidak ada)" else
+			for i, n in ipairs(items) do
+				if i > 200 then o[#o + 1] = "- ..." break end
+				o[#o + 1] = "- `" .. n .. "`"
+			end
+		end
+		o[#o + 1] = ""
+		return table.concat(o, "\n")
+	end
+	local s = sumCounts()
+	local head = {
+		"# Coverage debug", "",
+		"Seberapa lengkap data yang sudah direkam. Lakukan lebih banyak aksi di game untuk menutup bagian yang kosong.", "",
+		("- Packet terdaftar: %d"):format(total),
+		("- Sudah ada data: %d (%.0f%%)"):format(total - #noData, total > 0 and (total - #noData) / total * 100 or 0),
+		("- Total sub-packet terdeteksi: %d"):format(subTotal),
+		("- Struct declared terbaca: %d | hanya observed: %d"):format(total - #obsOnly, #obsOnly),
+		("- Total IN %d | OUT %d"):format(s.inR + s.inU + s.inX, s.outR + s.outU + s.outX),
+		("- Log tersimpan: %d entri | chat: %d"):format(#Store.log, #Store.chat), "",
+	}
+	return table.concat(head, "\n") .. "\n"
+		.. block("Packet tanpa data", noData, "Belum pernah muncul. Pancing lewat aksi di game.")
+		.. block("Hanya IN (belum ada request OUT)", onlyIn, "Server push, atau aksi pengirim belum dilakukan.")
+		.. block("Hanya OUT (belum ada response IN)", onlyOut)
+		.. block("Channel belum diketahui", noChan)
+		.. block("Struct hanya observed", obsOnly, "Definisi ByteNet tidak terbaca (executor tanpa getupvalues/debug.info?). Tipe bisa lebih kecil dari aslinya.")
+end
+
+local function mdRemotes()
+	local o = { "# Remote di ReplicatedStorage", "", "| Path | Class | ByteNet | Channel |", "| --- | --- | --- | --- |" }
+	for _, r in ipairs(remoteList) do
+		o[#o + 1] = ("| `%s` | %s | %s | %s |"):format(mdEscape(r.path), r.class, r.bytenet and "ya" or "tidak", r.bytenet and r.chan or "-")
+	end
+	if #remoteList == 0 then o[#o + 1] = "| _belum discan. Nyalakan Rekam Packet_ | | | |" end
+	return table.concat(o, "\n") .. "\n"
+end
+
+local function mdLogAll()
+	local o = { "# Log packet", "", ("Total %d entri (terbaru di bawah). OUT = request, IN = response/push."):format(#Store.log), "", "```text" }
+	for _, r in ipairs(Store.log) do o[#o + 1] = recLine(r, false) end
+	o[#o + 1] = "```"
+	return table.concat(o, "\n") .. "\n"
+end
+
+local function gameName()
+	if state.gameName then return state.gameName end
+	local name = "Game"
+	pcall(function() name = game:GetService("MarketplaceService"):GetProductInfo(game.PlaceId).Name end)
+	state.gameName = name
+	return name
+end
+
+local function gameFolder()
+	return safeName(gameName()):sub(1, 40) .. "_" .. tostring(game.PlaceId)
+end
+
+local function buildDocFiles()
+	local list = sortedEntries()
+	local files = {}
+	local function add(path, text) files[#files + 1] = { path, text } end
+
+	local gname = gameName()
+	add("README.md", table.concat({
+		("# StructScope - %s"):format(gname), "",
+		("- PlaceId: `%s`"):format(tostring(game.PlaceId)),
+		("- Dibuat: %s oleh StructScope v%s"):format(os.date("%Y-%m-%d %H:%M:%S"), VERSION),
+		("- Packet: %d | log: %d | chat: %d"):format(#list, #Store.log, #Store.chat), "",
+		"## Daftar isi", "",
+		"| File | Isi |", "| --- | --- |",
+		"| [overview.md](overview.md) | Tabel ringkas semua packet, link ke dokumen per packet |",
+		"| [coverage.md](coverage.md) | Kelengkapan data: packet kosong, hanya IN/OUT, struct observed |",
+		"| [channels.md](channels.md) | Statistik reliable / unreliable dan packet teramai |",
+		"| [remotes.md](remotes.md) | Daftar remote di ReplicatedStorage |",
+		"| [structs/index.md](structs/index.md) | Tabel struct semua packet |",
+		"| [subpackets/index.md](subpackets/index.md) | Semua sub-packet (jenis pesan di dalam packet) |",
+		"| [categories/chat.md](categories/chat.md) | Packet kategori chat |",
+		"| [categories/movement.md](categories/movement.md) | Packet kategori movement |",
+		"| [categories/other.md](categories/other.md) | Packet kategori lain |",
+		"| [logs/packet_log.md](logs/packet_log.md) | Log packet (teks) |",
+		"| [logs/chat.md](logs/chat.md) | Chat log |",
+		"| [lua/Packets.lua](lua/Packets.lua) | Modul definePacket hasil generate |",
+		"| [lua/registry.lua](lua/registry.lua) | Tabel packet (Lua) |",
+		"| `packets/` | Satu dokumen per packet |",
+		"| `subpackets/` | Detail sub-packet per packet |",
+		"| `lua/templates/` | Template script per packet |",
+		"| `data/` | Log dan chat sebagai Lua table |", "",
+	}, "\n"))
+	add("overview.md", mdOverview(list))
+	add("coverage.md", mdCoverage(list))
+	add("channels.md", "# Statistik channel\n\n```text\n" .. channelStatsText() .. "\n```\n")
+	add("remotes.md", mdRemotes())
+	add("structs/index.md", mdStructIndex(list))
+	add("subpackets/index.md", mdSubIndex(list))
+	for _, cat in ipairs({ "chat", "movement", "other" }) do add("categories/" .. cat .. ".md", mdCategory(cat, list)) end
+	add("logs/packet_log.md", mdLogAll())
+	local chatLines = { "# Chat log", "", "```text" }
+	for _, c in ipairs(Store.chat) do chatLines[#chatLines + 1] = ("[%s] %-3s %s: %s <%s>"):format(c.time, c.dir, tostring(c.player), tostring(c.message), c.packet) end
+	chatLines[#chatLines + 1] = "```"
+	add("logs/chat.md", table.concat(chatLines, "\n") .. "\n")
+	add("lua/Packets.lua", frameworkModule())
+	add("lua/registry.lua", registryLua())
+	add("data/log.lua", logToLua(Store.log, "Packet log (semua)"))
+	add("data/chat.lua", chatToLua())
+	for i, e in ipairs(list) do
+		local f = pktFile(e)
+		add("packets/" .. f .. ".md", mdPacketDoc(e))
+		if e.subCount > 0 then add("subpackets/" .. f .. ".md", mdSubDoc(e)) end
+		add("lua/templates/" .. f .. ".lua", templateText(e))
+		if i % 25 == 0 then task.wait() end
+	end
+	return files
 end
 
 ------------------------------------------------------------------
 -- RENDER (pilihan tampilan viewer)
 ------------------------------------------------------------------
 local MODES = {
-	{ key = "full",      label = "Struct lengkap",              needsPacket = true },
-	{ key = "declared",  label = "Declared (definisi ByteNet)", needsPacket = true },
-	{ key = "observed",  label = "Observed (tabel field)",      needsPacket = true },
-	{ key = "sample",    label = "Sample terakhir (tree)",      needsPacket = true },
-	{ key = "samples",   label = "Semua sampel (Lua table)",    needsPacket = true },
-	{ key = "template",  label = "Template script (terpilih)",  needsPacket = true },
+	{ key = "full",      label = "Struct lengkap",               needsPacket = true },
+	{ key = "declared",  label = "Declared (definisi ByteNet)",  needsPacket = true },
+	{ key = "observed",  label = "Observed (tabel field)",       needsPacket = true },
+	{ key = "subs",      label = "Sub-packet (terpilih)",        needsPacket = true },
+	{ key = "substruct", label = "Struct sub-packet (detail)",   needsPacket = true },
+	{ key = "sample",    label = "Sample terakhir (tree)",       needsPacket = true },
+	{ key = "samples",   label = "Semua sampel (Lua table)",     needsPacket = true },
+	{ key = "template",  label = "Template script (terpilih)",   needsPacket = true },
+	{ key = "structs",   label = "TABEL STRUCT (semua packet)" },
+	{ key = "subs_all",  label = "Sub-packet (semua packet)" },
 	{ key = "registry",  label = "Tabel packet (semua)" },
 	{ key = "stats",     label = "Statistik channel (R/U)" },
 	{ key = "log",       label = "Log packet (sesuai filter)" },
@@ -2609,12 +3266,16 @@ local function render()
 	if k == "full" then return packetReport(e), headerOf(e)
 	elseif k == "declared" then return declaredText(e), "Declared - " .. headerOf(e)
 	elseif k == "observed" then return observedText(e) .. "\n\n" .. guessText(e), "Observed - " .. headerOf(e)
+	elseif k == "subs" then return subsText(e), "Sub-packet - " .. headerOf(e)
+	elseif k == "substruct" then return subDetailText(e, state.selectedSub), "Struct sub - " .. headerOf(e) .. (state.selectedSub and (" / " .. state.selectedSub) or "")
 	elseif k == "sample" then return lastSampleText(e), "Sample - " .. headerOf(e)
 	elseif k == "samples" then return samplesText(e), "Sampel - " .. headerOf(e)
 	elseif k == "template" then return templateText(e), "Template - " .. headerOf(e)
+	elseif k == "structs" then return structTableText(), "Tabel struct"
+	elseif k == "subs_all" then return subsAllText(), "Sub-packet semua"
 	elseif k == "registry" then return summaryText(), "Tabel packet"
 	elseif k == "stats" then return channelStatsText(), "Statistik channel"
-	elseif k == "log" then return logText(), "Log packet"
+	elseif k == "log" then return (logText()), "Log packet"
 	elseif k == "chat" then return chatText(), "Chat log"
 	elseif k == "feed" then return feedText(), "Live feed"
 	elseif k == "framework" then return frameworkModule(), "Packets.lua"
@@ -2624,74 +3285,175 @@ local function render()
 end
 
 ------------------------------------------------------------------
--- VIEWER (state; UI dibuat di dalam menu Script Hub)
+-- PANEL TEKS (viewer + log) dengan scroll dua arah
 ------------------------------------------------------------------
+local Panels = {}
+
+local function makePanel(gb, stick)
+	local P = { full = "", stick = stick }
+	local holder = Instance.new("Frame")
+	holder.Size = UDim2.new(1, 0, 0, 300)
+	holder.BackgroundColor3 = Library.OutlineColor
+	holder.BorderSizePixel = 0
+	holder.Parent = gb.Container
+	local hc = Instance.new("UICorner")
+	hc.CornerRadius = UDim.new(0, 8)
+	hc.Parent = holder
+
+	local scroll = Instance.new("ScrollingFrame")
+	scroll.Size = UDim2.new(1, -2, 1, -2)
+	scroll.Position = UDim2.fromOffset(1, 1)
+	scroll.BackgroundColor3 = Color3.fromRGB(12, 15, 20)
+	scroll.BorderSizePixel = 0
+	scroll.ScrollBarThickness = 6
+	scroll.CanvasSize = UDim2.new()
+	scroll.AutomaticCanvasSize = Enum.AutomaticSize.XY
+	scroll.ScrollingDirection = Enum.ScrollingDirection.XY
+	scroll.Parent = holder
+	local sc = Instance.new("UICorner")
+	sc.CornerRadius = UDim.new(0, 8)
+	sc.Parent = scroll
+
+	local box = Instance.new("TextBox")
+	box.Size = UDim2.new(0, 0, 0, 0)
+	box.AutomaticSize = Enum.AutomaticSize.XY
+	box.Position = UDim2.fromOffset(4, 4)
+	box.BackgroundTransparency = 1
+	box.MultiLine = true
+	box.ClearTextOnFocus = false
+	box.TextEditable = false
+	box.TextWrapped = false
+	box.TextXAlignment = Enum.TextXAlignment.Left
+	box.TextYAlignment = Enum.TextYAlignment.Top
+	box.Font = Enum.Font.Code
+	box.TextSize = 12
+	box.TextColor3 = Color3.fromRGB(215, 222, 240)
+	box.Text = ""
+	box.Parent = scroll
+	local minSize = Instance.new("UISizeConstraint")
+	minSize.MinSize = Vector2.new(200, 100)
+	minSize.Parent = box
+
+	P.holder, P.scroll, P.box = holder, scroll, box
+
+	function P.set(text, limit)
+		text = CFG.Ascii and ascii(text) or text
+		P.full = text
+		limit = limit or CFG.TextLimit
+		local shown = text
+		if #text > limit then
+			if P.stick then
+				shown = ("... [bagian awal dipotong, total %d karakter. Pakai Copy / Save untuk teks penuh]\n"):format(#text) .. text:sub(-limit)
+			else
+				shown = text:sub(1, limit) .. ("\n\n... [dipotong, total %d karakter. Pakai Copy / Save untuk teks penuh]"):format(#text)
+			end
+		end
+		local atBottom = false
+		if P.stick then
+			atBottom = scroll.CanvasPosition.Y + scroll.AbsoluteWindowSize.Y >= scroll.AbsoluteCanvasSize.Y - 40
+		end
+		box.Text = shown
+		if atBottom and state.logFollow ~= false then
+			task.defer(function()
+				pcall(function() scroll.CanvasPosition = Vector2.new(scroll.CanvasPosition.X, 1e7) end)
+			end)
+		end
+	end
+	Panels[#Panels + 1] = P
+	return P
+end
+
+-- tinggi panel mengikuti tinggi menu
+Library:OnResize(function(bw, bh, compact)
+	local h = compact and math.max(170, bh - 90) or math.max(170, bh - 108)
+	for _, P in ipairs(Panels) do
+		pcall(function() P.holder.Size = UDim2.new(1, 0, 0, h) end)
+	end
+end)
+
 local Viewer = { full = "", title = "" }
 
 function Viewer.set(text, ttl)
-	text = CFG.Ascii and ascii(text) or text
 	ttl = CFG.Ascii and ascii(ttl or "") or (ttl or "")
-	Viewer.full, Viewer.title = text, ttl
+	Viewer.title = ttl
+	if Viewer.panel then Viewer.panel.set(text) Viewer.full = Viewer.panel.full else Viewer.full = text end
 	if Viewer.titleLabel then
 		pcall(function() Viewer.titleLabel:SetText("Tampil: " .. ttl) end)
 	end
-	if Viewer.box then
-		if #text > CFG.TextLimit then
-			Viewer.box.Text = text:sub(1, CFG.TextLimit) .. ("\n\n... [dipotong, total %d karakter. Pakai Copy / Save untuk teks penuh]"):format(#text)
-		else
-			Viewer.box.Text = text
-		end
-	end
 end
 
-function Viewer.isOpen()
-	if Library.Toggled == false then return false end
-	if state.minimized then return false end
-	local ok, vis = pcall(function() return Viewer.tab.Container.Visible end)
-	if ok and type(vis) == "boolean" then return vis end
-	return true
+local function tabVisible(tab)
+	if Library.Toggled == false or state.minimized then return false end
+	local ok, vis = pcall(function() return tab.Container.Visible end)
+	return ok and vis == true
 end
 
 function Viewer.show()
 	if Viewer.tab then pcall(function() Viewer.tab:ShowTab() end) end
 end
 
-function Viewer.applyTheme(t)
-	if not Viewer.holder then return end
-	Viewer.holder.BackgroundColor3 = t.Outline
-	Viewer.scroll.BackgroundColor3 = t.View
-	Viewer.box.TextColor3 = t.Font
-end
-
 ------------------------------------------------------------------
--- EXPORT
+-- FILE (single + docs folder)
 ------------------------------------------------------------------
-local function ensureDir(dir)
+local madeDirs = {}
+local function ensureDirOnce(dir)
+	if madeDirs[dir] then return end
 	pcall(function()
 		if makefolder and not (isfolder and isfolder(dir)) then makefolder(dir) end
 	end)
+	madeDirs[dir] = true
 end
 
-local function writeOut(prefix, text, ext, subdir)
+local function ensureParents(path)
+	local acc
+	for seg in path:gmatch("([^/]+)/") do
+		acc = acc and (acc .. "/" .. seg) or seg
+		ensureDirOnce(acc)
+	end
+end
+
+local function writePath(path, text)
+	if not writefile then return false end
+	ensureParents(path)
+	if CFG.Ascii then text = ascii(text) end
+	return (pcall(writefile, path, text))
+end
+
+local function writeOut(prefix, text, ext)
 	ext = ext or "txt"
 	if not writefile then return nil, "writefile tidak didukung executor" end
-	local dir = "StructScope"
-	ensureDir(dir)
-	if subdir then
-		dir = dir .. "/" .. subdir
-		ensureDir(dir)
-	end
-	local path = ("%s/%s_%d.%s"):format(dir, prefix, os.time(), ext)
-	if subdir then path = ("%s/%s.%s"):format(dir, prefix, ext) end
-	if not pcall(writefile, path, text) then
+	local path = ("StructScope/%s_%d.%s"):format(prefix, os.time(), ext)
+	if not writePath(path, text) then
 		path = ("%s_%d.%s"):format(prefix, os.time(), ext)
-		if not pcall(writefile, path, text) then return nil, "gagal menulis file" end
+		if not pcall(writefile, path, CFG.Ascii and ascii(text) or text) then return nil, "gagal menulis file" end
 	end
 	return path
 end
 
-local function safeName(s)
-	return (ascii(s ~= "" and s or "view"):gsub("[^%w_%-]", "_"))
+local saving = false
+local function saveDocs(snapshot, quiet)
+	if not writefile then notify("writefile tidak didukung executor.", 4) return end
+	if #entries == 0 then notify("Belum ada packet. Scan / rekam dulu.", 3) return end
+	if saving then notify("Penyimpanan docs masih berjalan.", 2) return end
+	saving = true
+	state.lastSave = os.clock()
+	task.spawn(function()
+		local root
+		local ok, err = pcall(function()
+			root = "StructScope/" .. gameFolder() .. "/" .. (snapshot and ("snapshot_" .. os.date("%Y%m%d_%H%M%S")) or "latest")
+			local files = buildDocFiles()
+			local okN = 0
+			for i, f in ipairs(files) do
+				if writePath(root .. "/" .. f[1], f[2]) then okN += 1 end
+				if i % 10 == 0 then task.wait() end
+			end
+			if not quiet or okN < #files then
+				notify(("Docs disimpan: %d/%d file di workspace/%s"):format(okN, #files, root), 7)
+			end
+		end)
+		saving = false
+		if not ok then notify("Simpan docs gagal: " .. tostring(err), 6) end
+	end)
 end
 
 local function currentText()
@@ -2710,9 +3472,54 @@ end
 -- START / STOP
 ------------------------------------------------------------------
 local labelMap = {}
-local ddPacket, ddMute, statusLabel, statLabel, modeDD
+local ddPacket, ddMute, ddSub, ddLogPkt, ddLogSub, statusLabel, statLabel, modeDD, logLabel, logPanel
 
 local function labelOf(e) return ("%s (id %s)"):format(e.short, tostring(e.id or "?")) end
+
+local function refreshSubDD()
+	local list = { "(semua)" }
+	local e = state.selected
+	if e then
+		for i, n in ipairs(sortedSubNames(e)) do
+			if i > 150 then break end
+			list[#list + 1] = n
+		end
+	end
+	if ddSub then
+		pcall(function()
+			ddSub:SetValues(list)
+			local v = ddSub.Value
+			state.selectedSub = (v and v ~= "(semua)") and v or nil
+		end)
+	end
+end
+
+local function refreshLogSubDD()
+	local names, set = {}, {}
+	local function addE(e)
+		for n in pairs(e.subs) do
+			if not set[n] then set[n] = true names[#names + 1] = n end
+		end
+	end
+	if logCfg.pkt ~= "Semua" then
+		local e = byName[logCfg.pkt:lower()]
+		if e then addE(e) end
+	else
+		for _, e in ipairs(entries) do addE(e) end
+	end
+	table.sort(names)
+	local list = { "Semua" }
+	for i, n in ipairs(names) do
+		if i > 200 then break end
+		list[#list + 1] = n
+	end
+	if ddLogSub then
+		pcall(function()
+			ddLogSub:SetValues(list)
+			logCfg.sub = ddLogSub.Value or "Semua"
+		end)
+	end
+end
 
 local function refreshLists()
 	state.listDirty = false
@@ -2731,13 +3538,23 @@ local function refreshLists()
 		end
 	end
 	if #labels == 0 then labels = { "(tidak ada packet)" } end
-	if #names == 0 then names = { "(tidak ada packet)" } end
+	local muteNames = #names > 0 and names or { "(tidak ada packet)" }
 	if ddPacket then pcall(function() ddPacket:SetValues(labels) end) end
-	if ddMute then pcall(function() ddMute:SetValues(names) end) end
+	if ddMute then pcall(function() ddMute:SetValues(muteNames) end) end
+	if ddLogPkt then
+		local lp = { "Semua" }
+		for _, n in ipairs(names) do lp[#lp + 1] = n end
+		pcall(function()
+			ddLogPkt:SetValues(lp)
+			logCfg.pkt = ddLogPkt.Value or "Semua"
+		end)
+	end
 	if not state.selected and labelMap[labels[1]] then
 		state.selected = labelMap[labels[1]]
 		if ddPacket then pcall(function() ddPacket:SetValue(labels[1]) end) end
 	end
+	refreshSubDD()
+	refreshLogSubDD()
 end
 
 local starting = false
@@ -2759,7 +3576,7 @@ local function startSpy()
 		state.lastScan = os.clock()
 		refreshLists()
 		starting = false
-		state.dirty = true
+		markDirty()
 		notify(("Aktif: %d packet (%d baru), remote %d. OUT: %s"):format(
 			#entries, added, nRem, okC and "hook process.client" or ("fallback obj.send (" .. tostring(errC) .. ")")), 6)
 	end)
@@ -2770,7 +3587,7 @@ local function stopSpy()
 	for _, e in ipairs(entries) do detach(e) end
 	disconnectRemotes()
 	if chatConn then pcall(function() chatConn:Disconnect() end) chatConn = nil end
-	state.dirty = true
+	markDirty()
 end
 
 local function clearAll()
@@ -2782,7 +3599,9 @@ local function clearAll()
 	Raw.reliable.n, Raw.reliable.bytes, Raw.unreliable.n, Raw.unreliable.bytes = 0, 0, 0, 0
 	logCfg.seq, logCfg.dropped = 0, 0
 	state.t0 = state.active and os.clock() or nil
-	state.dirty = true
+	refreshSubDD()
+	refreshLogSubDD()
+	markDirty()
 end
 
 ------------------------------------------------------------------
@@ -2804,11 +3623,12 @@ local API = {
 			local c, src = chanInfo(e)
 			return {
 				id = e.id, name = e.short, fullName = e.name, channel = c, source = src,
-				struct = introspect(e), schema = e.schema,
+				struct = introspect(e), schema = e.schema, discriminator = e.discKey, subs = e.subs,
 				counts = { inR = e.inR, inU = e.inU, inX = e.inX, outR = e.outR, outU = e.outU, outX = e.outX },
 				samples = e.samples,
 			}
 		end,
+		subs = function(k) local e = lookup(k) return e and e.subs or nil end,
 		list = function()
 			local out = {}
 			for _, e in ipairs(sortedEntries()) do out[#out + 1] = e.short end
@@ -2830,7 +3650,8 @@ local API = {
 		s.rawReliable, s.rawUnreliable = Raw.reliable, Raw.unreliable
 		return s
 	end,
-	Export = { framework = frameworkModule, docs = docsMarkdown, report = allReport },
+	Export = { framework = frameworkModule, docs = docsMarkdown, report = allReport, structs = structTableText },
+	SaveDocs = function(snapshot) saveDocs(snapshot and true or false, false) end,
 }
 
 ------------------------------------------------------------------
@@ -2838,92 +3659,36 @@ local API = {
 ------------------------------------------------------------------
 local Window = Library:CreateWindow({
 	Title = "StructScope",
-	Subtitle = "Rekam - Lihat - Generate",
+	Subtitle = "Rekam - Struct - Docs",
 	Version = VERSION,
 	AutoShow = true,
 	ToggleKey = CFG.MenuKey,
-	Size = UDim2.fromOffset(800, 480),
+	Size = UDim2.fromOffset(820, 500),
 })
 
 local Tabs = {
-	Main  = Window:AddTab("Utama"),
-	View  = Window:AddTab("Viewer", { Split = 0.62 }),
-	Log   = Window:AddTab("Log"),
-	Copy  = Window:AddTab("Copy"),
-	Frame = Window:AddTab("Framework"),
-	Theme = Window:AddTab("Tema"),
-	Info  = Window:AddTab("Info"),
+	Main   = Window:AddTab("Utama"),
+	View   = Window:AddTab("Viewer", { Split = 0.62 }),
+	Log    = Window:AddTab("Log", { Split = 0.62 }),
+	Struct = Window:AddTab("Struct"),
+	Save   = Window:AddTab("Simpan"),
+	Theme  = Window:AddTab("Tema"),
+	Info   = Window:AddTab("Info"),
 }
 Viewer.tab = Tabs.View
 
--- panel teks di dalam tab Viewer
-local GBText = Tabs.View:AddLeftGroupbox("Isi Struct")
-Viewer.titleLabel = GBText:AddLabel("Tampil: -")
-do
-	local holder = Instance.new("Frame")
-	holder.Size = UDim2.new(1, 0, 0, 300)
-	holder.BackgroundColor3 = Library.OutlineColor
-	holder.BorderSizePixel = 0
-	holder.Parent = GBText.Container
-
-	local scroll = Instance.new("ScrollingFrame")
-	scroll.Size = UDim2.new(1, -2, 1, -2)
-	scroll.Position = UDim2.fromOffset(1, 1)
-	scroll.BackgroundColor3 = Color3.fromRGB(12, 15, 20)
-	scroll.BorderSizePixel = 0
-	scroll.ScrollBarThickness = 6
-	scroll.CanvasSize = UDim2.new()
-	scroll.AutomaticCanvasSize = Enum.AutomaticSize.XY
-	scroll.ScrollingDirection = Enum.ScrollingDirection.XY
-	scroll.Parent = holder
-
-	local box = Instance.new("TextBox")
-	box.Size = UDim2.new(0, 0, 0, 0)
-	box.AutomaticSize = Enum.AutomaticSize.XY
-	box.Position = UDim2.fromOffset(4, 4)
-	box.BackgroundTransparency = 1
-	box.MultiLine = true
-	box.ClearTextOnFocus = false
-	box.TextEditable = false
-	box.TextWrapped = false
-	box.TextXAlignment = Enum.TextXAlignment.Left
-	box.TextYAlignment = Enum.TextYAlignment.Top
-	box.Font = Enum.Font.Code
-	box.TextSize = 12
-	box.TextColor3 = Color3.fromRGB(215, 222, 240)
-	box.Text = ""
-	box.Parent = scroll
-	local minSize = Instance.new("UISizeConstraint")
-	minSize.MinSize = Vector2.new(300, 200)
-	minSize.Parent = box
-
-	Viewer.holder, Viewer.scroll, Viewer.box = holder, scroll, box
-	pcall(function() GBText:Resize() end)
+local WinCtl = { minimized = false }
+function WinCtl.toggle() Window:SetMinimized(not WinCtl.minimized) end
+function WinCtl.unload()
+	local fn = getgenv and getgenv().__StructScopeUnload
+	if fn then fn() else pcall(function() Library:Unload() end) end
 end
-
--- minimize / maximize / close ada di title bar (digambar oleh Script Hub UI)
-local WinCtl = { minimized = false, hidden = {}, btns = {} }
+Window.OnMinimized = function(v)
+	WinCtl.minimized = v
+	state.minimized = v
+	markDirty()
+end
 do
-	WinCtl.holder = Window.Holder
-
-	function WinCtl.setMinimized(v)
-		Window:SetMinimized(v)
-	end
-	function WinCtl.toggle() WinCtl.setMinimized(not WinCtl.minimized) end
-
-	function WinCtl.unload()
-		local fn = getgenv and getgenv().__StructScopeUnload
-		if fn then fn() else pcall(function() Library:Unload() end) end
-	end
-
-	function WinCtl.applyTheme(t) end
-
-	Window.OnMinimized = function(v)
-		WinCtl.minimized = v
-		state.minimized = v
-		state.dirty = true
-	end
-
 	local armed = false
 	Window.OnClose = function()
 		if not armed then
@@ -2941,9 +3706,8 @@ local function doCopy(text, label)
 	notify(clip(text) and ("%s disalin (%d karakter)."):format(label, #text) or "setclipboard tidak didukung executor.", 3)
 end
 
-local function doSave(prefix, text, ext, subdir)
-	if CFG.Ascii then text = ascii(text) end
-	local path, err = writeOut(prefix, text, ext, subdir)
+local function doSave(prefix, text, ext)
+	local path, err = writeOut(prefix, text, ext)
 	notify(path and ("Disimpan: " .. path) or tostring(err), 6)
 	return path
 end
@@ -2980,7 +3744,7 @@ end
 -- TAB UTAMA
 ------------------------------------------------------------------
 local GBControl = Tabs.Main:AddLeftGroupbox("Kontrol")
-local recToggle = GBControl:AddToggle("SS_Rec", {
+GBControl:AddToggle("SS_Rec", {
 	Text = "Rekam Packet (pasif)",
 	Default = false,
 	Tooltip = "Scan packet, pasang listener IN, hook OUT, dan pantau RemoteEvent. Hanya merekam.",
@@ -3013,53 +3777,50 @@ local GBStat = Tabs.Main:AddRightGroupbox("Statistik Channel")
 statLabel = GBStat:AddLabel("Belum ada data", true)
 GBStat:AddButton({ Text = "Lihat Statistik di Viewer", Func = function() jumpView("stats") end })
 
-local GBWin = Tabs.Main:AddRightGroupbox("Jendela")
-GBWin:AddButton({ Text = "Tutup Semua (Unload)", Func = function() WinCtl.unload() end })
+local GBQuick = Tabs.Main:AddRightGroupbox("Jalan Pintas")
+GBQuick:AddButton({ Text = "Simpan Docs Lengkap (folder rapi)", Func = function() saveDocs(false, false) end })
+GBQuick:AddButton({ Text = "Tabel Struct semua packet", Func = function() jumpView("structs") end })
+GBQuick:AddButton({ Text = "Tutup Semua (Unload)", Func = function() WinCtl.unload() end })
 
 ------------------------------------------------------------------
--- TAB VIEWER (kontrol)
+-- TAB VIEWER
 ------------------------------------------------------------------
+local GBText = Tabs.View:AddLeftGroupbox("Isi Struct")
+Viewer.titleLabel = GBText:AddLabel("Tampil: -")
+Viewer.panel = makePanel(GBText, false)
+
 local GBPick = Tabs.View:AddRightGroupbox("Lihat Struct")
 GBPick:AddInput("SS_Filter", {
-	Default = "",
-	Numeric = false,
-	Finished = false,
-	Text = "Filter nama / ID",
-	Placeholder = "contoh: act atau 12",
-	Callback = function(t)
-		state.filter = (t or ""):lower()
-		refreshLists()
-	end,
+	Default = "", Finished = false, Text = "Filter nama / ID", Placeholder = "contoh: act atau 12",
+	Callback = function(t) state.filter = (t or ""):lower() refreshLists() end,
 })
 ddPacket = GBPick:AddDropdown("SS_Packet", {
-	Values = { "(scan dulu)" },
-	Default = 1,
-	Multi = false,
-	Text = "Packet",
+	Values = { "(scan dulu)" }, Default = 1, Multi = false, Text = "Packet",
 	Callback = function(v)
 		local e = labelMap[v]
 		if e then
 			state.selected = e
-			state.dirty = true
+			refreshSubDD()
+			markDirty()
 		end
 	end,
 })
+ddSub = GBPick:AddDropdown("SS_Sub", {
+	Values = { "(semua)" }, Default = 1, Multi = false, Text = "Sub-packet (message / type di dalam packet)",
+	Callback = function(v)
+		state.selectedSub = (v and v ~= "(semua)") and v or nil
+		markDirty()
+	end,
+})
 modeDD = GBPick:AddDropdown("SS_Mode", {
-	Values = MODE_LABELS,
-	Default = 1,
-	Multi = false,
-	Text = "Tampilan",
+	Values = MODE_LABELS, Default = 1, Multi = false, Text = "Tampilan",
 	Callback = function(v)
 		local m = MODE_BY_LABEL[v]
 		if m then state.view = m.key end
-		state.dirty = true
+		markDirty()
 	end,
 })
-GBPick:AddToggle("SS_Auto", {
-	Text = "Auto-refresh viewer",
-	Default = true,
-	Callback = function(v) state.auto = v end,
-})
+GBPick:AddToggle("SS_Auto", { Text = "Auto-refresh viewer", Default = true, Callback = function(v) state.auto = v end })
 GBPick:AddButton({ Text = "Tampilkan / Refresh", Func = showView })
 GBPick:AddButton({
 	Text = "Copy Isi Viewer",
@@ -3080,73 +3841,86 @@ GBPick:AddButton({
 ------------------------------------------------------------------
 -- TAB LOG
 ------------------------------------------------------------------
-local GBFilter = Tabs.Log:AddLeftGroupbox("Filter Log")
+local GBLog = Tabs.Log:AddLeftGroupbox("Log Packet (scroll)")
+logLabel = GBLog:AddLabel("Belum ada log. Nyalakan Rekam Packet.")
+logPanel = makePanel(GBLog, true)
+
+local GBFilter = Tabs.Log:AddRightGroupbox("Filter Log")
 GBFilter:AddDropdown("SS_LogDir", {
-	Values = { "Semua", "IN", "OUT" },
-	Default = 1,
-	Multi = false,
-	Text = "Arah (IN server ke client)",
-	Callback = function(v) logCfg.dir = v state.dirty = true end,
+	Values = { "Semua", "IN", "OUT" }, Default = 1, Multi = false,
+	Text = "Arah (OUT = request, IN = response / push)",
+	Callback = function(v) logCfg.dir = v markDirty() end,
+})
+ddLogPkt = GBFilter:AddDropdown("SS_LogPkt", {
+	Values = { "Semua" }, Default = 1, Multi = false, Text = "Packet",
+	Callback = function(v)
+		logCfg.pkt = v or "Semua"
+		refreshLogSubDD()
+		markDirty()
+	end,
+})
+ddLogSub = GBFilter:AddDropdown("SS_LogSub", {
+	Values = { "Semua" }, Default = 1, Multi = false, Text = "Sub-packet / message di dalam packet",
+	Callback = function(v) logCfg.sub = v or "Semua" markDirty() end,
 })
 GBFilter:AddDropdown("SS_LogChan", {
-	Values = { "Semua", "reliable", "unreliable", "?" },
-	Default = 1,
-	Multi = false,
-	Text = "Channel",
-	Callback = function(v) logCfg.chan = v state.dirty = true end,
+	Values = { "Semua", "reliable", "unreliable", "?" }, Default = 1, Multi = false, Text = "Channel",
+	Callback = function(v) logCfg.chan = v markDirty() end,
 })
 GBFilter:AddDropdown("SS_LogCat", {
-	Values = { "Semua", "chat", "movement", "other" },
-	Default = 1,
-	Multi = false,
-	Text = "Kategori",
-	Callback = function(v) logCfg.cat = v state.dirty = true end,
+	Values = { "Semua", "chat", "movement", "other" }, Default = 1, Multi = false, Text = "Kategori",
+	Callback = function(v) logCfg.cat = v markDirty() end,
 })
 GBFilter:AddInput("SS_LogName", {
-	Default = "",
-	Numeric = false,
-	Finished = false,
-	Text = "Filter nama / ID packet",
-	Placeholder = "contoh: chat atau note",
-	Callback = function(t) logCfg.name = (t or ""):lower() state.dirty = true end,
+	Default = "", Finished = false, Text = "Cari nama / ID / sub", Placeholder = "contoh: chat atau message",
+	Callback = function(t) logCfg.name = (t or ""):lower() markDirty() end,
+})
+GBFilter:AddInput("SS_LogText", {
+	Default = "", Finished = false, Text = "Cari isi data", Placeholder = "teks / angka di dalam data",
+	Callback = function(t) logCfg.text = (t or ""):lower() markDirty() end,
 })
 GBFilter:AddSlider("SS_LogLines", {
-	Text = "Baris tampil di viewer",
-	Default = state.logLines,
-	Min = 10,
-	Max = 70,
-	Rounding = 0,
-	Compact = false,
-	Callback = function(v) state.logLines = v state.dirty = true end,
+	Text = "Baris tampil (scroll untuk lihat semua)", Default = state.logLines, Min = 20, Max = 400, Rounding = 0,
+	Callback = function(v) state.logLines = v markDirty() end,
 })
-GBFilter:AddButton({ Text = "Lihat Log Packet di Viewer", Func = function() jumpView("log") end })
+GBFilter:AddToggle("SS_LogDetail", {
+	Text = "Detail data (multi-baris)", Default = false,
+	Callback = function(v) state.logDetail = v markDirty() end,
+})
+GBFilter:AddToggle("SS_LogFollow", {
+	Text = "Ikuti log baru (auto-scroll)", Default = true,
+	Tooltip = "Hanya mengikuti bila posisi scroll sudah di paling bawah.",
+	Callback = function(v) state.logFollow = v end,
+})
+GBFilter:AddButton({
+	Text = "Reset Filter",
+	Func = function()
+		logCfg.dir, logCfg.cat, logCfg.chan, logCfg.pkt, logCfg.sub, logCfg.name, logCfg.text = "Semua", "Semua", "Semua", "Semua", "Semua", "", ""
+		for _, id in ipairs({ "SS_LogDir", "SS_LogPkt", "SS_LogSub", "SS_LogChan", "SS_LogCat" }) do
+			local o = Library.Options[id]
+			if o then pcall(function() o:SetValue("Semua") end) end
+		end
+		for _, id in ipairs({ "SS_LogName", "SS_LogText" }) do
+			local o = Library.Options[id]
+			if o then pcall(function() o:SetValue("") end) end
+		end
+		markDirty()
+	end,
+})
 GBFilter:AddButton({ Text = "Lihat Chat Log di Viewer", Func = function() jumpView("chat") end })
 GBFilter:AddButton({ Text = "Lihat Live Feed di Viewer", Func = function() jumpView("feed") end })
 
 local GBRec = Tabs.Log:AddRightGroupbox("Rekaman")
 GBRec:AddSlider("SS_MoveCap", {
-	Text = "Movement maks /detik (0 = semua)",
-	Default = CFG.MoveCap,
-	Min = 0,
-	Max = 30,
-	Rounding = 0,
-	Compact = false,
+	Text = "Movement maks /detik (0 = semua)", Default = CFG.MoveCap, Min = 0, Max = 30, Rounding = 0,
 	Callback = function(v) CFG.MoveCap = v end,
 })
 GBRec:AddSlider("SS_MaxSamples", {
-	Text = "Maks sampel per packet",
-	Default = CFG.MaxSamples,
-	Min = 3,
-	Max = 40,
-	Rounding = 0,
-	Compact = false,
+	Text = "Maks sampel per packet", Default = CFG.MaxSamples, Min = 3, Max = 40, Rounding = 0,
 	Callback = function(v) CFG.MaxSamples = v end,
 })
 ddMute = GBRec:AddDropdown("SS_Mute", {
-	Values = { "(scan dulu)" },
-	Multi = true,
-	AllowNull = true,
-	Text = "Mute packet spam",
+	Values = { "(scan dulu)" }, Multi = true, AllowNull = true, Text = "Mute packet spam",
 	Tooltip = "Packet yang dipilih tetap dihitung tapi tidak dicatat / dipelajari.",
 	Callback = function(v)
 		table.clear(muted)
@@ -3158,13 +3932,11 @@ ddMute = GBRec:AddDropdown("SS_Mute", {
 	end,
 })
 GBRec:AddToggle("SS_Ascii", {
-	Text = "ASCII-safe (cegah huruf kotak)",
-	Default = CFG.Ascii,
-	Callback = function(v) CFG.Ascii = v state.dirty = true end,
+	Text = "ASCII-safe (cegah huruf kotak)", Default = CFG.Ascii,
+	Callback = function(v) CFG.Ascii = v markDirty() end,
 })
 GBRec:AddToggle("SS_AutoScan", {
-	Text = "Auto-scan packet baru (20 detik)",
-	Default = false,
+	Text = "Auto-scan packet baru (20 detik)", Default = false,
 	Tooltip = "getgc cukup berat. Nyalakan hanya jika packet baru sering didefinisikan.",
 	Callback = function(v) state.autoScan = v end,
 })
@@ -3174,67 +3946,37 @@ GBRec:AddButton({
 		table.clear(Store.log)
 		table.clear(Store.chat)
 		logCfg.seq, logCfg.dropped = 0, 0
-		state.dirty = true
+		markDirty()
 		notify("Log dan chat dibersihkan.", 2)
 	end,
 })
 
 ------------------------------------------------------------------
--- TAB COPY
+-- TAB STRUCT (tabel struct, sub-packet, framework)
 ------------------------------------------------------------------
-local GBCopy = Tabs.Copy:AddLeftGroupbox("Copy ke Clipboard")
-GBCopy:AddButton({ Text = "Copy Tampilan Saat Ini", Func = function() doCopy(currentText(), "Tampilan") end })
-GBCopy:AddButton({
-	Text = "Copy Table Log (Lua)",
-	Tooltip = "Semua log packet sesuai filter di tab Log",
-	Func = function() local s = logLua() if s then doCopy(s, "Table log") end end,
+local GBStruct = Tabs.Struct:AddLeftGroupbox("Tabel Struct dari Packet")
+GBStruct:AddLabel("Struct dibaca dari definisi ByteNet (declared) atau dipelajari dari data nyata (observed). Sub-packet = jenis pesan di dalam satu packet.", true)
+GBStruct:AddButton({ Text = "Tabel Struct SEMUA di Viewer", Func = function() jumpView("structs") end })
+GBStruct:AddButton({ Text = "Sub-packet SEMUA di Viewer", Func = function() jumpView("subs_all") end })
+GBStruct:AddButton({
+	Text = "Sub-packet packet terpilih",
+	Func = function() if needSelected() then jumpView("subs") end end,
 })
-GBCopy:AddButton({
-	Text = "Copy Table Chat (Lua)",
-	Func = function() local s = chatLua() if s then doCopy(s, "Table chat") end end,
+GBStruct:AddButton({
+	Text = "Struct sub-packet terpilih (detail)",
+	Func = function() if needSelected() then jumpView("substruct") end end,
 })
-GBCopy:AddButton({
-	Text = "Copy Tabel Packet (Lua)",
-	Tooltip = "Daftar semua packet: id, nama, channel, jumlah, struct",
-	Func = function() doCopy(registryLua(), "Tabel packet") end,
+GBStruct:AddButton({ Text = "Copy Tabel Struct (teks)", Func = function() doCopy(structTableText(), "Tabel struct") end })
+GBStruct:AddButton({
+	Text = "Copy Tabel Struct (Markdown)",
+	Func = function() doCopy(mdStructIndex(sortedEntries()), "Tabel struct MD") end,
 })
-GBCopy:AddButton({
-	Text = "Copy Definisi ByteNet (terpilih)",
-	Func = function()
-		local e = needSelected()
-		if e then doCopy(packetDefText(e), "Definisi") end
-	end,
-})
-GBCopy:AddButton({ Text = "Copy Statistik Channel", Func = function() doCopy(channelStatsText(), "Statistik") end })
-GBCopy:AddButton({ Text = "Copy Laporan SEMUA Packet", Func = function() doCopy(allReport(), "Laporan") end })
-
-local GBSave = Tabs.Copy:AddRightGroupbox("Simpan ke File")
-GBSave:AddButton({
-	Text = "Simpan Tampilan",
-	Func = function()
-		local text, title = currentText()
-		doSave(safeName(title), text, "txt")
-	end,
-})
-GBSave:AddButton({
-	Text = "Simpan Table Log (.lua)",
-	Func = function() local s = logLua() if s then doSave("packet_log", s, "lua") end end,
-})
-GBSave:AddButton({
-	Text = "Simpan Table Chat (.lua)",
-	Func = function() local s = chatLua() if s then doSave("chat_log", s, "lua") end end,
-})
-GBSave:AddButton({ Text = "Simpan Tabel Packet (.lua)", Func = function() doSave("packet_table", registryLua(), "lua") end })
-GBSave:AddButton({
-	Text = "Simpan Laporan SEMUA",
-	Func = function() doSave("struct_report_" .. tostring(game.PlaceId), allReport(), "txt") end,
+GBStruct:AddButton({
+	Text = "Copy Sub-packet (Markdown)",
+	Func = function() doCopy(mdSubIndex(sortedEntries()), "Sub-packet MD") end,
 })
 
-------------------------------------------------------------------
--- TAB FRAMEWORK
-------------------------------------------------------------------
-local GBGen = Tabs.Frame:AddLeftGroupbox("Generate")
-GBGen:AddLabel("Hasilkan modul dan dokumentasi dari packet yang sudah dikenali.", true)
+local GBGen = Tabs.Struct:AddRightGroupbox("Framework Generator")
 GBGen:AddButton({ Text = "Lihat Packets.lua di Viewer", Func = function() jumpView("framework") end })
 GBGen:AddButton({ Text = "Lihat Dokumentasi di Viewer", Func = function() jumpView("docs") end })
 GBGen:AddButton({
@@ -3251,38 +3993,82 @@ GBGen:AddButton({
 	end,
 })
 
-local GBFSave = Tabs.Frame:AddRightGroupbox("Simpan")
-GBFSave:AddButton({ Text = "Simpan Packets.lua", Func = function() doSave("Packets", frameworkModule(), "lua") end })
-GBFSave:AddButton({ Text = "Simpan Dokumentasi (.md)", Func = function() doSave("DOKUMENTASI_" .. tostring(game.PlaceId), docsMarkdown(), "md") end })
-GBFSave:AddButton({
-	Text = "Simpan Template Script (terpilih)",
+------------------------------------------------------------------
+-- TAB SIMPAN (docs folder rapi + copy)
+------------------------------------------------------------------
+local GBDocs = Tabs.Save:AddLeftGroupbox("Simpan Docs (folder rapi)")
+GBDocs:AddLabel("Satu klik membuat folder Markdown terstruktur: README, overview, coverage, channels, remotes, structs, subpackets, packets, categories, logs, lua, data.", true)
+GBDocs:AddButton({
+	Text = "Simpan Docs Lengkap (latest)",
+	Tooltip = "Menimpa folder 'latest' agar selalu mutakhir.",
+	Func = function() saveDocs(false, false) end,
+})
+GBDocs:AddButton({
+	Text = "Snapshot Docs (folder bertanggal)",
+	Tooltip = "Folder baru berisi salinan lengkap, tidak menimpa 'latest'.",
+	Func = function() saveDocs(true, false) end,
+})
+GBDocs:AddToggle("SS_AutoSave", {
+	Text = "Auto-save docs berkala", Default = false,
+	Tooltip = "Menyimpan ke folder 'latest' saat merekam.",
+	Callback = function(v) state.autoSave = v state.lastSave = os.clock() end,
+})
+GBDocs:AddSlider("SS_AutoSaveMin", {
+	Text = "Interval auto-save (menit)", Default = CFG.AutoSaveMin, Min = 1, Max = 30, Rounding = 0,
+	Callback = function(v) CFG.AutoSaveMin = v end,
+})
+GBDocs:AddLabel("Lokasi: workspace/StructScope/<NamaGame>_<PlaceId>/latest", true)
+
+local GBSave = Tabs.Save:AddRightGroupbox("Simpan File Tunggal")
+GBSave:AddButton({
+	Text = "Simpan Tampilan Viewer",
+	Func = function()
+		local text, title = currentText()
+		doSave(safeName(title), text, "txt")
+	end,
+})
+GBSave:AddButton({
+	Text = "Simpan Table Log (.lua)",
+	Func = function() local s = logLua() if s then doSave("packet_log", s, "lua") end end,
+})
+GBSave:AddButton({
+	Text = "Simpan Table Chat (.lua)",
+	Func = function() local s = chatLua() if s then doSave("chat_log", s, "lua") end end,
+})
+GBSave:AddButton({ Text = "Simpan Tabel Packet (.lua)", Func = function() doSave("packet_table", registryLua(), "lua") end })
+GBSave:AddButton({ Text = "Simpan Packets.lua", Func = function() doSave("Packets", frameworkModule(), "lua") end })
+GBSave:AddButton({
+	Text = "Simpan Laporan SEMUA",
+	Func = function() doSave("struct_report_" .. tostring(game.PlaceId), allReport(), "txt") end,
+})
+GBSave:AddButton({
+	Text = "Simpan Template (terpilih)",
 	Func = function()
 		local e = needSelected()
 		if e then doSave("template_" .. safeName(e.short), templateText(e), "lua") end
 	end,
 })
-GBFSave:AddButton({
-	Text = "Export SEMUA ke satu folder",
-	Tooltip = "Packets.lua, dokumentasi, laporan, tabel packet, log, chat",
+
+local GBCopy = Tabs.Save:AddRightGroupbox("Copy ke Clipboard")
+GBCopy:AddButton({ Text = "Copy Tampilan Saat Ini", Func = function() doCopy(currentText(), "Tampilan") end })
+GBCopy:AddButton({
+	Text = "Copy Table Log (Lua, sesuai filter)",
+	Func = function() local s = logLua() if s then doCopy(s, "Table log") end end,
+})
+GBCopy:AddButton({
+	Text = "Copy Table Chat (Lua)",
+	Func = function() local s = chatLua() if s then doCopy(s, "Table chat") end end,
+})
+GBCopy:AddButton({ Text = "Copy Tabel Packet (Lua)", Func = function() doCopy(registryLua(), "Tabel packet") end })
+GBCopy:AddButton({
+	Text = "Copy Definisi ByteNet (terpilih)",
 	Func = function()
-		if #entries == 0 then return notify("Belum ada packet. Scan / rekam dulu.", 3) end
-		local sub = ("export_%s_%d"):format(tostring(game.PlaceId), os.time())
-		local files = {
-			{ "Packets", frameworkModule(), "lua" },
-			{ "DOKUMENTASI", docsMarkdown(), "md" },
-			{ "laporan", allReport(), "txt" },
-			{ "tabel_packet", registryLua(), "lua" },
-			{ "log", logToLua(Store.log, "Packet log (semua)"), "lua" },
-			{ "chat", chatToLua(), "lua" },
-		}
-		local okN = 0
-		for _, f in ipairs(files) do
-			local txt = CFG.Ascii and ascii(f[2]) or f[2]
-			if writeOut(f[1], txt, f[3], sub) then okN += 1 end
-		end
-		notify(okN > 0 and ("Export: %d file di workspace/StructScope/%s"):format(okN, sub) or "Export gagal (writefile?).", 6)
+		local e = needSelected()
+		if e then doCopy(packetDefText(e), "Definisi") end
 	end,
 })
+GBCopy:AddButton({ Text = "Copy Statistik Channel", Func = function() doCopy(channelStatsText(), "Statistik") end })
+GBCopy:AddButton({ Text = "Copy Laporan SEMUA Packet", Func = function() doCopy(allReport(), "Laporan") end })
 
 ------------------------------------------------------------------
 -- TEMA
@@ -3325,27 +4111,33 @@ local function applyTheme(name)
 	Library.FontColor = t.Font
 	pcall(function() Library.AccentColorDark = Library:GetDarkerColor(t.Accent) end)
 	pcall(function() Library:UpdateColorsUsingRegistry() end)
-	pcall(Viewer.applyTheme, t)
-	pcall(WinCtl.applyTheme, t)
+	for _, P in ipairs(Panels) do
+		pcall(function()
+			P.holder.BackgroundColor3 = t.Outline
+			P.scroll.BackgroundColor3 = t.View
+			P.box.TextColor3 = t.Font
+		end)
+	end
 end
 
 local GBTheme = Tabs.Theme:AddLeftGroupbox("Tema")
 GBTheme:AddDropdown("SS_Theme", {
-	Values = THEME_ORDER,
-	Default = 1,
-	Multi = false,
-	Text = "Pilih tema",
+	Values = THEME_ORDER, Default = 1, Multi = false, Text = "Pilih tema",
 	Callback = function(v) applyTheme(v) end,
 })
 GBTheme:AddLabel("Tema berlaku untuk menu dan viewer.", true)
 
 local GBMenu = Tabs.Theme:AddRightGroupbox("Menu")
+GBMenu:AddToggle("SS_Fab", {
+	Text = "Tombol cepat 'SS' di layar", Default = true,
+	Tooltip = "Ketuk untuk buka / tutup menu (berguna di mobile).",
+	Callback = function(v) if Library.Fab then Library.Fab.Visible = v end end,
+})
+GBMenu:AddButton({ Text = "Ukuran Default", Func = function() Window:SetMaximized(false) Window:SetSize(820, 500) end })
 GBMenu:AddButton({ Text = "Tutup Semua (Unload)", Func = function() WinCtl.unload() end })
 pcall(function()
 	local lbl = GBMenu:AddLabel("Tombol buka/tutup menu")
 	lbl:AddKeyPicker("MenuKeybind", { Default = CFG.MenuKey, Mode = "Toggle", NoUI = true, Text = "Menu keybind" })
-	local opts = (getgenv and getgenv().Options) or Library.Options
-	if opts and opts.MenuKeybind then Library.ToggleKeybind = opts.MenuKeybind end
 end)
 
 ------------------------------------------------------------------
@@ -3354,25 +4146,26 @@ end)
 local GBInfo = Tabs.Info:AddLeftGroupbox("Cara Pakai")
 GBInfo:AddLabel(
 	"1. Nyalakan Rekam Packet (tab Utama).\n" ..
-	"2. Lakukan aksi di game: jalan, pukul, chat, dll.\n" ..
-	"3. Tab Viewer: pilih packet dan Tampilan.\n" ..
-	"4. Tab Log: filter arah / channel / kategori.\n" ..
-	"5. Tab Copy: copy atau simpan log, chat, tabel packet.\n" ..
-	"6. Tab Framework: Packets.lua, dokumentasi, template.\n" ..
-	"7. Title bar menu: garis (kecilkan), kotak (perbesar), X (tutup, klik 2x). Tarik title bar untuk memindah.",
+	"2. Lakukan aksi di game: jalan, pukul, chat, buka menu, dll.\n" ..
+	"3. Tab Viewer: pilih packet, sub-packet, dan Tampilan.\n" ..
+	"4. Tab Log: scroll semua baris, filter arah / packet / sub / isi data.\n" ..
+	"5. Tab Struct: tabel struct dan sub-packet semua packet.\n" ..
+	"6. Tab Simpan: 'Simpan Docs Lengkap' membuat folder Markdown rapi.\n" ..
+	"7. Tarik bar paling bawah menu untuk mengubah ukuran. Tarik title bar untuk memindah. Garis = kecilkan, kotak = perbesar, X = tutup (klik 2x).",
 	true
 )
 local GBNote = Tabs.Info:AddRightGroupbox("Catatan")
 GBNote:AddLabel(
-	"Channel OUT pasti dari hook sendReliable/sendUnreliable. " ..
-	"Channel IN dibaca dari definisi packet; bila tidak ada, ditebak dari RemoteEvent (tanda ~). " ..
-	"Data yang dilihat adalah hasil decode ByteNet (table), bukan buffer mentah. " ..
+	"OUT = request (client ke server), IN = response / push (server ke client). " ..
+	"Channel OUT pasti dari hook sendReliable/sendUnreliable; IN dari definisi packet atau tebakan RemoteEvent (tanda ~). " ..
+	"Sub-packet dikenali dari field pembeda (packet, type, action, message, cmd, ...) atau elemen pertama array. " ..
 	"Declared butuh getupvalues dan debug.info. " ..
-	"Script lain bisa memakai getgenv().StructScope (lihat Dokumentasi).",
+	"Script lain bisa memakai getgenv().StructScope.",
 	true
 )
 
 applyTheme("Script Hub")
+Window:Layout()
 
 ------------------------------------------------------------------
 -- UNLOAD
@@ -3384,7 +4177,6 @@ local function cleanup()
 	for _, e in ipairs(entries) do pcall(detach, e) end
 	disconnectRemotes()
 	for _, c in ipairs(conns) do pcall(function() c:Disconnect() end) end
-	for _, b in ipairs(WinCtl.btns) do pcall(function() b:Destroy() end) end
 	if chatConn then pcall(function() chatConn:Disconnect() end) chatConn = nil end
 	table.clear(Subs)
 	if getgenv then
@@ -3408,10 +4200,11 @@ end
 -- LOOP
 ------------------------------------------------------------------
 task.spawn(function()
-	local lastStatus = 0
+	local lastStatus, lastLog, lastSig = 0, 0, ""
 	while running do
 		local now = os.clock()
 		if state.listDirty then pcall(refreshLists) end
+
 		if state.autoScan and state.active and not starting and now - state.lastScan >= CFG.AutoScanEvery then
 			state.lastScan = now
 			task.spawn(function()
@@ -3422,13 +4215,28 @@ task.spawn(function()
 				end
 			end)
 		end
-		if state.auto and state.dirty and Viewer.isOpen() then
+
+		if state.autoSave and state.active and not saving and #entries > 0 and now - state.lastSave >= CFG.AutoSaveMin * 60 then
+			saveDocs(false, true)
+		end
+
+		if state.dirty and state.auto and tabVisible(Tabs.View) then
 			state.dirty = false
 			pcall(function()
 				local text, title = render()
 				Viewer.set(text, title)
 			end)
 		end
+		if state.logDirty and now - lastLog >= 0.5 and tabVisible(Tabs.Log) then
+			state.logDirty = false
+			lastLog = now
+			pcall(function()
+				local text, count = logText()
+				logPanel.set(text, CFG.LogLimit)
+				logLabel:SetText(("%d log cocok filter | total %d | scroll untuk melihat semua"):format(count, #Store.log))
+			end)
+		end
+
 		if now - lastStatus >= 1 then
 			lastStatus = now
 			local s = sumCounts()
@@ -3442,9 +4250,18 @@ task.spawn(function()
 				statLabel:SetText(("Reliable   IN %d | OUT %d\nUnreliable IN %d | OUT %d\nBelum jelas IN %d | OUT %d\nRaw byte R %d | U %d"):format(
 					s.inR, s.outR, s.inU, s.outU, s.inX, s.outX, Raw.reliable.bytes, Raw.unreliable.bytes))
 			end)
+			-- segarkan dropdown sub-packet bila ada jenis baru
+			local total, selN = 0, state.selected and state.selected.subCount or 0
+			for _, e in ipairs(entries) do total += e.subCount end
+			local sig = total .. ":" .. selN .. ":" .. logCfg.pkt
+			if sig ~= lastSig then
+				lastSig = sig
+				pcall(refreshSubDD)
+				pcall(refreshLogSubDD)
+			end
 		end
 		task.wait(0.3)
 	end
 end)
 
-notify("StructScope siap. Nyalakan 'Rekam Packet' untuk mulai.", 4)
+notify("StructScope v" .. VERSION .. " siap. Nyalakan 'Rekam Packet' untuk mulai.", 4)
