@@ -1,5 +1,5 @@
 --[[
-    StructScope v1.0  -  Struct Debugger untuk ByteNet (LINORIA UI)
+    StructScope v1.1  -  Struct Debugger untuk ByteNet (LINORIA UI)
     PASIF: hanya membaca / merekam. Tidak mengirim, mengubah, atau memutar ulang packet.
 
     Tiga sumber informasi struct per packet:
@@ -11,7 +11,7 @@
       3) TEBAKAN  : definisi ByteNet.struct({...}) yang dibuat dari data OBSERVED.
 
     Viewer: panel teks (bisa digeser) dengan tombol Copy / Save.
-    Menu Linoria dikontrol lewat bar kecil di atas layar (tanpa shortcut keyboard).
+    Menu Linoria dikontrol lewat floating shortcut dock yang bisa digeser.
 ]]
 
 ------------------------------------------------------------------
@@ -1132,8 +1132,8 @@ do
 	end
 
 	local main = Instance.new("Frame")
-	main.Size = UDim2.fromOffset(470, 300)
-	main.Position = UDim2.new(1, -480, 1, -310)
+	main.Size = UDim2.fromOffset(390, 260)
+	main.Position = UDim2.new(1, -400, 1, -270)
 	main.BackgroundColor3 = Color3.fromRGB(22, 22, 28)
 	main.BorderSizePixel = 0
 	main.Parent = gui
@@ -1231,7 +1231,7 @@ do
 	box.Text = ""
 	box.Parent = scroll
 	local minSize = Instance.new("UISizeConstraint")
-	minSize.MinSize = Vector2.new(440, 220)
+	minSize.MinSize = Vector2.new(360, 180)
 	minSize.Parent = box
 
 	local row = Instance.new("Frame")
@@ -1391,7 +1391,7 @@ local Window = Library:CreateWindow({
 	AutoShow = true,
 	TabPadding = 6,
 	MenuFadeTime = 0.15,
-	Size = UDim2.fromOffset(470, 330),
+	Size = UDim2.fromOffset(390, 285),
 })
 
 local Tabs = {
@@ -1661,8 +1661,9 @@ GBSave:AddButton({
 })
 
 ------------------------------------------------------------------
--- BAR KONTROL KECIL (minimize / close tanpa shortcut)
-------------------------------------------------------------------
+-- FLOATING SHORTCUT DOCK
+-- Tombol launcher kecil dapat digeser; panel shortcut memakai grid agar
+-- tombol tidak saling menimpa pada layar sempit / touch.
 local ControlBar = { btns = {} }
 do
 	local parent
@@ -1682,114 +1683,186 @@ do
 
 	local function corner(o, r)
 		local c = Instance.new("UICorner")
-		c.CornerRadius = UDim.new(0, r or 5)
+		c.CornerRadius = UDim.new(0, r or 8)
 		c.Parent = o
 	end
 
-	local frame = Instance.new("Frame")
-	frame.Size = UDim2.fromOffset(236, 26)
-	frame.Position = UDim2.new(0.5, -118, 0, 6)
-	frame.BackgroundColor3 = Color3.fromRGB(24, 28, 34)
-	frame.BorderSizePixel = 0
-	frame.Parent = gui
-	corner(frame, 6)
-	local stroke = Instance.new("UIStroke")
-	stroke.Color = Color3.fromRGB(0, 170, 160)
-	stroke.Thickness = 1
-	stroke.Parent = frame
-	local pad = Instance.new("UIPadding")
-	pad.PaddingLeft = UDim.new(0, 4)
-	pad.Parent = frame
-	local layout = Instance.new("UIListLayout")
-	layout.FillDirection = Enum.FillDirection.Horizontal
-	layout.Padding = UDim.new(0, 4)
-	layout.VerticalAlignment = Enum.VerticalAlignment.Center
-	layout.Parent = frame
+	local function stroke(o, color)
+		local st = Instance.new("UIStroke")
+		st.Color = color
+		st.Thickness = 1
+		st.Parent = o
+		return st
+	end
 
-	local function mk(text, w, cb)
+	local launcher = Instance.new("TextButton")
+	launcher.Name = "StructScopeLauncher"
+	launcher.Size = UDim2.fromOffset(42, 42)
+	launcher.Position = UDim2.new(0, 14, 0.55, 0)
+	launcher.BackgroundColor3 = Color3.fromRGB(24, 28, 34)
+	launcher.BorderSizePixel = 0
+	launcher.Text = "SS"
+	launcher.Font = Enum.Font.GothamBold
+	launcher.TextSize = 15
+	launcher.TextColor3 = Color3.fromRGB(230, 236, 240)
+	launcher.AutoButtonColor = true
+	launcher.Parent = gui
+	corner(launcher, 14)
+	local launcherStroke = stroke(launcher, Color3.fromRGB(0, 170, 160))
+
+	local panel = Instance.new("Frame")
+	panel.Name = "ShortcutPanel"
+	panel.Size = UDim2.fromOffset(190, 214)
+	panel.Position = UDim2.new(0, 62, 0.55, 0)
+	panel.BackgroundColor3 = Color3.fromRGB(24, 28, 34)
+	panel.BorderSizePixel = 0
+	panel.Visible = false
+	panel.Parent = gui
+	corner(panel, 10)
+	local panelStroke = stroke(panel, Color3.fromRGB(0, 170, 160))
+
+	local heading = Instance.new("TextLabel")
+	heading.BackgroundTransparency = 1
+	heading.Position = UDim2.fromOffset(10, 5)
+	heading.Size = UDim2.new(1, -20, 0, 22)
+	heading.Text = "STRUCTSCOPE"
+	heading.Font = Enum.Font.GothamBold
+	heading.TextSize = 11
+	heading.TextXAlignment = Enum.TextXAlignment.Left
+	heading.TextColor3 = Color3.fromRGB(230, 236, 240)
+	heading.Parent = panel
+
+	local grid = Instance.new("Frame")
+	grid.BackgroundTransparency = 1
+	grid.Position = UDim2.fromOffset(8, 32)
+	grid.Size = UDim2.new(1, -16, 1, -40)
+	grid.Parent = panel
+	local gridLayout = Instance.new("UIGridLayout")
+	gridLayout.CellSize = UDim2.new(0.5, -4, 0, 39)
+	gridLayout.CellPadding = UDim2.fromOffset(7, 6)
+	gridLayout.SortOrder = Enum.SortOrder.LayoutOrder
+	gridLayout.Parent = grid
+
+	local function shortcut(icon, label, order, callback, danger)
 		local b = Instance.new("TextButton")
-		b.Size = UDim2.fromOffset(w, 20)
-		b.BackgroundColor3 = Color3.fromRGB(16, 19, 24)
+		b.Name = "Shortcut_" .. label:gsub("%W", "")
+		b.LayoutOrder = order
+		b.BackgroundColor3 = danger and Color3.fromRGB(92, 34, 42) or Color3.fromRGB(16, 19, 24)
 		b.BorderSizePixel = 0
-		b.Text = text
-		b.Font = Enum.Font.Code
-		b.TextSize = 12
+		b.Text = icon .. "  " .. label
+		b.Font = Enum.Font.GothamMedium
+		b.TextSize = 11
 		b.TextColor3 = Color3.fromRGB(230, 236, 240)
-		b.Parent = frame
-		corner(b, 4)
-		track(b.MouseButton1Click:Connect(cb))
+		b.TextTruncate = Enum.TextTruncate.AtEnd
+		b.Parent = grid
+		corner(b, 7)
 		ControlBar.btns[#ControlBar.btns + 1] = b
+		track(b.MouseButton1Click:Connect(callback))
 		return b
 	end
 
-	local collapsed, moved = false, false
-	local grip
-	local function setCollapsed(v)
-		collapsed = v
-		for _, b in ipairs(ControlBar.btns) do
-			if b ~= grip then b.Visible = not v end
-		end
-		frame.Size = v and UDim2.fromOffset(42, 26) or UDim2.fromOffset(236, 26)
+	local function toggleMenu()
+		pcall(function() Library:Toggle() end)
 	end
-
-	grip = mk("SS", 30, function()
-		if moved then return end
-		if collapsed then setCollapsed(false) end
-	end)
-	mk("Menu", 40, function() pcall(function() Library:Toggle() end) end)
-	mk("View", 40, function()
+	local function toggleViewer()
 		if Viewer.gui.Enabled then Viewer.show(false) else showView() end
-	end)
-	local recBtn = mk("Rec OFF", 56, function()
+	end
+	local function toggleRecord()
 		pcall(function() recToggle:SetValue(not recToggle.Value) end)
-	end)
-	mk("-", 22, function() setCollapsed(true) end)
-	local xArmed = false
-	local xBtn
-	xBtn = mk("X", 22, function()
-		if not xArmed then
-			xArmed = true
-			xBtn.Text = "?"
-			notify("Klik X sekali lagi untuk menutup semua.", 3)
-			task.delay(3, function()
-				xArmed = false
-				pcall(function() xBtn.Text = "X" end)
-			end)
-			return
-		end
+	end
+	local function scan()
+		task.spawn(function()
+			local n = scanPackets()
+			if state.active then
+				for _, e in ipairs(entries) do attach(e) end
+			end
+			refreshLists()
+			notify(("Scan selesai: %d packet baru, total %d."):format(n, #entries), 4)
+		end)
+	end
+	local function closeAll()
 		local fn = getgenv and getgenv().__StructScopeUnload
 		if fn then fn() else pcall(function() Library:Unload() end) end
+	end
+
+	shortcut("⌂", "Menu", 1, toggleMenu)
+	shortcut("▣", "Viewer", 2, toggleViewer)
+	local recBtn = shortcut("●", "Rec OFF", 3, toggleRecord)
+	shortcut("↻", "Scan", 4, scan)
+	shortcut("▤", "Log", 5, function() jumpView(7) end)
+	shortcut("−", "Minimize", 6, toggleMenu)
+	shortcut("×", "Close", 7, closeAll, true)
+
+	local open = false
+	launcher.MouseButton1Click:Connect(function()
+		if ControlBar._dragged then
+			ControlBar._dragged = false
+			return
+		end
+		open = not open
+		panel.Visible = open
 	end)
 
+	local function placePanel()
+		local camera = workspace.CurrentCamera
+		local viewport = camera and camera.ViewportSize or Vector2.new(800, 600)
+		local pos = launcher.AbsolutePosition
+		local x = pos.X + 49
+		if x + panel.AbsoluteSize.X > viewport.X - 4 then
+			x = pos.X - panel.AbsoluteSize.X - 7
+		end
+		x = math.clamp(x, 4, math.max(4, viewport.X - panel.AbsoluteSize.X - 4))
+		local y = math.clamp(pos.Y - 8, 4, math.max(4, viewport.Y - panel.AbsoluteSize.Y - 4))
+		panel.Position = UDim2.fromOffset(x, y)
+	end
+	placePanel()
+
 	function ControlBar.setRec(on)
-		recBtn.Text = on and "REC ON" or "Rec OFF"
+		recBtn.Text = on and "● Rec ON" or "● Rec OFF"
 	end
 	function ControlBar.applyTheme(t)
-		frame.BackgroundColor3 = t.Main
-		stroke.Color = t.Accent
+		launcher.BackgroundColor3 = t.Main
+		launcher.TextColor3 = t.Font
+		launcherStroke.Color = t.Accent
+		panel.BackgroundColor3 = t.Main
+		panelStroke.Color = t.Accent
+		heading.TextColor3 = t.Font
 		for _, b in ipairs(ControlBar.btns) do
-			b.BackgroundColor3 = t.Background
 			b.TextColor3 = t.Font
+			b.BackgroundColor3 = t.Background
 		end
 	end
 
+	-- Drag launcher on mouse or touch; the shortcut panel follows it.
 	local dragging, dragStart, startPos = false, nil, nil
-	local function beginDrag(i)
-		if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then
-			dragging, dragStart, startPos, moved = true, i.Position, frame.Position, false
+	local moved = false
+	launcher.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			dragging, moved = true, false
+			dragStart, startPos = input.Position, launcher.Position
 		end
-	end
-	track(frame.InputBegan:Connect(beginDrag))
-	track(grip.InputBegan:Connect(beginDrag))
-	track(UserInputService.InputChanged:Connect(function(i)
-		if dragging and (i.UserInputType == Enum.UserInputType.MouseMovement or i.UserInputType == Enum.UserInputType.Touch) then
-			local d = i.Position - dragStart
-			if d.Magnitude > 4 then moved = true end
-			frame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X, startPos.Y.Scale, startPos.Y.Offset + d.Y)
+	end)
+	track(UserInputService.InputChanged:Connect(function(input)
+		if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+			local delta = input.Position - dragStart
+			if delta.Magnitude > 5 then
+				moved = true
+				ControlBar._dragged = true
+			end
+			if moved then
+				local camera = workspace.CurrentCamera
+				local viewport = camera and camera.ViewportSize or Vector2.new(800, 600)
+				local baseX = startPos.X.Scale * viewport.X + startPos.X.Offset
+				local baseY = startPos.Y.Scale * viewport.Y + startPos.Y.Offset
+				local x = math.clamp(baseX + delta.X, 0, math.max(0, viewport.X - 42))
+				local y = math.clamp(baseY + delta.Y, 0, math.max(0, viewport.Y - 42))
+				launcher.Position = UDim2.new(0, x, 0, y)
+				placePanel()
+			end
 		end
 	end))
-	track(UserInputService.InputEnded:Connect(function(i)
-		if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then
+	track(UserInputService.InputEnded:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
 			dragging = false
 		end
 	end))
@@ -1887,7 +1960,7 @@ GBInfo:AddLabel(
 	"3. Tab Utama: pilih packet dan Tampilan untuk melihat struct.\n" ..
 	"4. Tab Log: filter arah / kategori, lihat log dan chat.\n" ..
 	"5. Tab Copy: copy atau simpan table log, chat, tabel packet.\n" ..
-	"6. Bar kecil: SS (geser / buka lagi), Menu, View, Rec, - (kecilkan), X (tutup, klik 2x).",
+	"6. Ikon SS mengambang: geser untuk memindahkan, ketuk untuk membuka shortcut Menu, Viewer, Rec, Scan, Log, Minimize, dan Close.",
 	true
 )
 local GBNote = Tabs.Info:AddRightGroupbox("Catatan")
