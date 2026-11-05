@@ -1582,6 +1582,7 @@ GBRec:AddSlider("SS_MaxSamples", {
 ddMute = GBRec:AddDropdown("SS_Mute", {
 	Values = { "(scan dulu)" },
 	Multi = true,
+	AllowNull = true, -- dropdown multi tanpa nilai awal: tidak ada packet yang di-mute saat start
 	Text = "Mute packet spam",
 	Tooltip = "Packet yang dipilih tetap dihitung tapi tidak dicatat / dipelajari.",
 	Callback = function(v)
