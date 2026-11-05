@@ -16,6 +16,9 @@
 
 ---
 
+#Import Awal
+```loadstring(game:HttpGet("https://raw.githubusercontent.com/Mytzcodes/Gbxzcf0x2993HsFDj1/refs/heads/main/NXroENinD_DPcKage_Loader.lua"))()```
+
 ## 1. Arsitektur Memori DLL & Struct Protocol
 
 Model struct didesain setara standard industri hook GrowLauncher dan GentaHax dengan binary packing 1 byte (`#pragma pack(push, 1)`). Seluruh data dapat di-map langsung ke FFI C/C++ memory pointer tanpa alignment padding tersembunyi.
