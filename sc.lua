@@ -1,31 +1,43 @@
 --[[
-    StructScope v1.0  -  Struct Debugger untuk ByteNet (LINORIA UI)
-    PASIF: hanya membaca / merekam. Tidak mengirim, mengubah, atau memutar ulang packet.
+    StructScope v2.0  -  ByteNet Debugger + Framework Generator (LINORIA UI)
+    PASIF: hanya membaca / merekam. Debugger tidak mengirim, mengubah, atau memutar ulang packet.
 
-    Tiga sumber informasi struct per packet:
-      1) DECLARED : dibaca dari definisi ByteNet asli
-                    (upvalue reader/writer -> modul dataTypes.*). Ini yang paling akurat.
-      2) OBSERVED : dipelajari dari data nyata
-                    (IN lewat listener packet, OUT lewat hook process.client).
-                    Menampilkan tipe, wajib/opsional, rentang angka, panjang, contoh nilai.
-      3) TEBAKAN  : definisi ByteNet.struct({...}) yang dibuat dari data OBSERVED.
+    FITUR UTAMA
+      * Channel RELIABLE / UNRELIABLE per packet:
+          - OUT : pasti (hook process.client.sendReliable / sendUnreliable)
+          - IN  : dari definisi packet (reliabilityType) atau heuristik RemoteEvent
+                  (tanda "~" artinya hasil tebakan)
+      * Tiga sumber struct: DECLARED (definisi ByteNet), OBSERVED (data nyata), TEBAKAN
+      * Statistik channel: jumlah packet, byte mentah RemoteEvent, packet/detik
+      * Log packet + chat log, filter arah / channel / kategori / nama
+      * Generator FRAMEWORK : Packets.lua (definePacket + reliabilityType),
+                              Dokumentasi Markdown, Template script per packet
+      * API untuk script baru: getgenv().StructScope
 
-    Viewer: panel teks (bisa digeser) dengan tombol Copy / Save.
-    Menu Linoria dikontrol lewat bar kecil di atas layar (tanpa shortcut keyboard).
+    API (getgenv().StructScope) untuk script lain:
+      StructScope.Packets.get(namaAtauId)   -> objek ByteNet asli (listen / send)
+      StructScope.Packets.info(namaAtauId)  -> { id, name, channel, source, struct, schema, counts }
+      StructScope.Packets.list()            -> daftar nama packet
+      StructScope.Subscribe(function(name, dir, chan, data, entry) end) -> fungsi unsubscribe
+      StructScope.Log / StructScope.Chat    -> tabel log
+      StructScope.Stats()                   -> { inR, inU, outR, outU, ... }
+      StructScope.Export.framework() / .docs() / .report()  -> string
 ]]
 
 ------------------------------------------------------------------
 -- CONFIG
 ------------------------------------------------------------------
+local VERSION = "2.0"
 local CFG = {
 	MaxSamples = 12,     -- sampel terakhir yang disimpan per packet
 	LearnLimit = 300,    -- jumlah data per packet yang dipelajari penuh (sisanya 1 dari 20)
 	FeedMax    = 250,    -- baris live feed
 	LogMax     = 1500,   -- entri log packet keseluruhan
 	MoveCap    = 6,      -- maks packet movement dicatat per detik (0 = tanpa batas)
-	TextLimit  = 15000,  -- batas karakter yang ditampilkan di viewer (Copy/Save tetap penuh)
+	TextLimit  = 12000,  -- batas karakter di viewer (Copy/Save tetap penuh)
 	Ascii      = true,   -- ganti karakter non-ASCII jadi '?' (cegah huruf kotak)
 	MenuKey    = "RightShift",
+	AutoScanEvery = 20,  -- detik, bila Auto-scan dinyalakan
 }
 
 ------------------------------------------------------------------
@@ -33,8 +45,6 @@ local CFG = {
 ------------------------------------------------------------------
 local Players           = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local UserInputService  = game:GetService("UserInputService")
-local CoreGui           = game:GetService("CoreGui")
 local LocalPlayer       = Players.LocalPlayer
 
 if getgenv and getgenv().__StructScopeUnload then
@@ -111,6 +121,13 @@ local function sortedKeys(t)
 	return keys
 end
 
+local function identOf(s)
+	s = (tostring(s):gsub("[^%w_]", "_"))
+	if s == "" then s = "_" end
+	if s:match("^%d") or RESERVED[s] then s = "_" .. s end
+	return s
+end
+
 -- literal satu baris (ringkas)
 local function lit(v, depth)
 	depth = depth or 0
@@ -180,7 +197,8 @@ local function luaSrc(v, indent, depth, seen)
 		local ok, s = pcall(buffer.tostring, v)
 		if not ok then return "nil" end
 		if #s > 128 then s = s:sub(1, 128) end
-		return 'buffer.fromstring("' .. s:gsub(".", function(c) return ("\\x%02X"):format(c:byte()) end) .. '")'
+		local hex = s:gsub(".", function(c) return ("\\x%02X"):format(c:byte()) end)
+		return 'buffer.fromstring("' .. hex .. '")'
 	end
 	return lit(v)
 end
@@ -396,14 +414,21 @@ end
 ------------------------------------------------------------------
 -- STATE & REGISTRY
 ------------------------------------------------------------------
-local state = { active = false, dirty = true, listDirty = true, view = 1, selected = nil, filter = "", auto = true, logLines = 60 }
+local state = {
+	active = false, dirty = true, listDirty = true, view = "full", selected = nil,
+	filter = "", auto = true, logLines = 60, autoScan = false, t0 = nil, lastScan = 0,
+}
 local muted = {}
 local entries, byObj, byId, byName = {}, {}, {}, {}
 local Store = { feed = {}, log = {}, chat = {} }
+local Raw = { reliable = { n = 0, bytes = 0 }, unreliable = { n = 0, bytes = 0 } }
+local Subs = {}
 local chatConn
+local remoteConns = {}
+local remotesFound = 0
 
 local logCfg = {
-	dir = "Semua", cat = "Semua", name = "",
+	dir = "Semua", cat = "Semua", chan = "Semua", name = "",
 	seq = 0, dropped = 0, moveT = 0, moveN = 0,
 	chatKeys = { "chat", "msg", "message", "say", "talk", "whisper", "emote", "shout", "speak" },
 	moveKeys = { "move", "walk", "cframe", "velocity", "jump", "teleport", "dash", "sprint", "position" },
@@ -466,16 +491,50 @@ local function extractChat(data)
 	return who, msg
 end
 
-local function recordLog(e, dir, data)
+------------------------------------------------------------------
+-- CHANNEL (reliable / unreliable)
+------------------------------------------------------------------
+local Chan = { last = nil, t = 0, fresh = false, pending = {} }
+
+-- e.chan   : channel dari definisi packet (declared)
+-- e.outR/U : OUT pasti dari hook process.client
+-- e.vR/vU  : suara heuristik dari RemoteEvent (IN)
+local function chanInfo(e)
+	if e.chan then return e.chan, "declared" end
+	local r, u = e.outR, e.outU
+	if r + u > 0 then return (r >= u) and "reliable" or "unreliable", "observed" end
+	r, u = e.vR, e.vU
+	if r + u > 0 then return (r >= u) and "reliable" or "unreliable", "heuristic" end
+	return nil, nil
+end
+
+local function chanTag(e)
+	local c, src = chanInfo(e)
+	if not c then return "?" end
+	local t = c == "reliable" and "R" or "U"
+	if src == "heuristic" then t = t .. "~" end
+	return t
+end
+
+local function chanText(e)
+	local c, src = chanInfo(e)
+	if not c then return "tidak diketahui" end
+	return c:upper() .. " (" .. src .. ")"
+end
+
+local function recordLog(e, dir, data, ch)
 	local cat = classify(e.short, data)
 	local now = os.clock()
 	if cat == "movement" and CFG.MoveCap > 0 then
 		if now - logCfg.moveT >= 1 then logCfg.moveT, logCfg.moveN = now, 0 end
-		if logCfg.moveN >= CFG.MoveCap then logCfg.dropped += 1 return end
+		if logCfg.moveN >= CFG.MoveCap then logCfg.dropped += 1 return nil end
 		logCfg.moveN += 1
 	end
 	logCfg.seq += 1
-	local rec = { n = logCfg.seq, time = os.date("%H:%M:%S"), dir = dir, name = e.short, id = e.id, cat = cat, data = deepCopy(data) }
+	local rec = {
+		n = logCfg.seq, time = os.date("%H:%M:%S"), dir = dir, name = e.short, id = e.id,
+		chan = ch, cat = cat, data = deepCopy(data),
+	}
 	local L = Store.log
 	L[#L + 1] = rec
 	while #L > CFG.LogMax do table.remove(L, 1) end
@@ -488,6 +547,7 @@ local function recordLog(e, dir, data)
 			while #C > CFG.LogMax do table.remove(C, 1) end
 		end
 	end
+	return rec
 end
 
 local function connectChatService()
@@ -517,7 +577,10 @@ local function upList(f)
 	if not ups then return {} end
 	local idx = {}
 	for i in pairs(ups) do idx[#idx + 1] = i end
-	table.sort(idx, function(a, b) return tostring(a) < tostring(b) end)
+	table.sort(idx, function(a, b)
+		if type(a) == "number" and type(b) == "number" then return a < b end
+		return tostring(a) < tostring(b)
+	end)
 	local out = {}
 	for _, i in ipairs(idx) do out[#out + 1] = ups[i] end
 	return out
@@ -543,8 +606,10 @@ local function isPacketObj(t)
 	return ok and res
 end
 
+local SEND_KEYS = { "send", "sendTo", "sendToAll" }
+
 local function findPacketId(obj)
-	for _, key in ipairs({ "send", "sendTo", "sendToAll" }) do
+	for _, key in ipairs(SEND_KEYS) do
 		local f = rawget(obj, key)
 		if type(f) == "function" then
 			for _, v in ipairs(upList(f)) do
@@ -553,6 +618,27 @@ local function findPacketId(obj)
 		end
 	end
 	return nil
+end
+
+-- cari string "reliable"/"unreliable" di upvalue fungsi send (definisi reliabilityType)
+local function detectChannel(obj)
+	for _, key in ipairs(SEND_KEYS) do
+		local f = rawget(obj, key)
+		if type(f) == "function" then
+			for _, v in ipairs(upList(f)) do
+				if type(v) == "string" then
+					local l = v:lower()
+					if l == "reliable" or l == "unreliable" then return l end
+				end
+			end
+		end
+	end
+	return nil
+end
+
+local function resetEntry(e)
+	e.schema, e.samples, e.cIn, e.cOut, e.learned = nil, {}, 0, 0, 0
+	e.inR, e.inU, e.inX, e.outR, e.outU, e.outX, e.vR, e.vU = 0, 0, 0, 0, 0, 0, 0, 0
 end
 
 local function indexEntry(e)
@@ -565,10 +651,54 @@ local function indexEntry(e)
 	state.listDirty = true
 end
 
-local function observe(e, dir, data)
+local function makeEntry(obj, id, name)
+	local e = {
+		obj = obj, id = id, auto = name == nil,
+		name = name or (id and ("pkt_" .. id)) or ("pkt_" .. (#entries + 1)),
+	}
+	resetEntry(e)
+	entries[#entries + 1] = e
+	if obj then byObj[obj] = e end
+	indexEntry(e)
+	return e
+end
+
+local function publish(e, dir, ch, data)
+	for i = 1, #Subs do
+		local cb = Subs[i]
+		if cb then pcall(cb, e.short, dir, ch, data, e) end
+	end
+end
+
+local function observe(e, dir, data, chan)
 	if dir == "IN" then e.cIn += 1 else e.cOut += 1 end
+
+	-- tentukan channel
+	local ch, pending = chan, false
+	if dir == "OUT" then
+		ch = chan or e.chan
+		if ch == "reliable" then e.outR += 1 elseif ch == "unreliable" then e.outU += 1 else e.outX += 1 end
+	else
+		ch = e.chan
+		if not ch and Chan.fresh then
+			ch = Chan.last
+			if ch == "reliable" then e.vR += 1 elseif ch then e.vU += 1 end
+		end
+		if ch == "reliable" then e.inR += 1
+		elseif ch == "unreliable" then e.inU += 1
+		else e.inX += 1 pending = true end
+	end
+
 	if muted[e.short] then return end
-	pcall(recordLog, e, dir, data)
+
+	local rec = select(2, pcall(recordLog, e, dir, data, ch))
+	if type(rec) ~= "table" then rec = nil end
+	if pending and remotesFound > 0 then
+		local P = Chan.pending
+		P[#P + 1] = { e = e, t = os.clock(), rec = rec }
+		while #P > 200 do table.remove(P, 1) end
+	end
+
 	local now = os.clock()
 	e.learned += 1
 	if e.learned <= CFG.LearnLimit or e.learned % 20 == 0 then
@@ -576,18 +706,77 @@ local function observe(e, dir, data)
 	end
 	if now - (e.lastSample or 0) >= 0.1 or #e.samples < 3 then
 		e.lastSample = now
-		e.samples[#e.samples + 1] = { dir = dir, time = os.date("%H:%M:%S"), data = deepCopy(data) }
+		e.samples[#e.samples + 1] = { dir = dir, chan = ch, time = os.date("%H:%M:%S"), data = deepCopy(data) }
 		while #e.samples > CFG.MaxSamples do table.remove(e.samples, 1) end
 	end
 	if now - (e.lastFeed or 0) >= 0.15 then
 		e.lastFeed = now
-		local line = ("[%s] %-3s %s %s"):format(os.date("%H:%M:%S"), dir, e.short, lit(data))
+		local tag = ch and (ch == "reliable" and "R" or "U") or "?"
+		local line = ("[%s] %-3s %s %s %s"):format(os.date("%H:%M:%S"), dir, tag, e.short, lit(data))
 		if #line > 220 then line = line:sub(1, 217) .. "..." end
 		local f = Store.feed
 		f[#f + 1] = line
 		while #f > CFG.FeedMax do table.remove(f, 1) end
 	end
+	publish(e, dir, ch, data)
 	state.dirty = true
+end
+
+-- RemoteEvent ByteNet: dipakai untuk heuristik channel IN + statistik byte mentah
+local function resolvePending(chan)
+	local now = os.clock()
+	local P = Chan.pending
+	for i = #P, 1, -1 do
+		local p = P[i]
+		if now - p.t <= 0.1 then
+			local e = p.e
+			if e.inX > 0 then e.inX -= 1 end
+			if chan == "reliable" then e.inR += 1 e.vR += 1 else e.inU += 1 e.vU += 1 end
+			if p.rec and not p.rec.chan then p.rec.chan = chan end
+		end
+		table.remove(P, i)
+	end
+end
+
+local function onRemote(chan, ...)
+	if not state.active then return end
+	Chan.last, Chan.t, Chan.fresh = chan, os.clock(), true
+	task.defer(function() Chan.fresh = false end)
+	local a = ...
+	local R = Raw[chan]
+	R.n += 1
+	if typeof(a) == "buffer" then R.bytes += buffer.len(a) end
+	resolvePending(chan)
+	state.dirty = true
+end
+
+local function connectRemotes()
+	if #remoteConns > 0 then return #remoteConns end
+	local okD, desc = pcall(function() return ReplicatedStorage:GetDescendants() end)
+	if not okD then return 0 end
+	for _, inst in ipairs(desc) do
+		local isRemote = inst:IsA("RemoteEvent") or inst:IsA("UnreliableRemoteEvent")
+		if isRemote then
+			local lname = inst.Name:lower()
+			local inBN = lname:find("bytenet", 1, true) or inst:FindFirstAncestor("ByteNet") ~= nil
+			if inBN then
+				local chan = (inst:IsA("UnreliableRemoteEvent") or lname:find("unreliable", 1, true)) and "unreliable" or "reliable"
+				local ok, c = pcall(function()
+					return inst.OnClientEvent:Connect(function(...) onRemote(chan, ...) end)
+				end)
+				if ok and c then remoteConns[#remoteConns + 1] = c end
+			end
+		end
+	end
+	remotesFound = #remoteConns
+	return remotesFound
+end
+
+local function disconnectRemotes()
+	for _, c in ipairs(remoteConns) do pcall(function() c:Disconnect() end) end
+	table.clear(remoteConns)
+	remotesFound = 0
+	table.clear(Chan.pending)
 end
 
 local function attach(e)
@@ -603,23 +792,10 @@ local function detach(e)
 		if i then table.remove(e.listeners, i) end
 	end
 	e.attached = false
-	-- cadangan OUT (jika hook process.client tidak ada)
 	if e.origSend and e.obj then
 		pcall(rawset, e.obj, "send", e.origSend)
 		e.origSend = nil
 	end
-end
-
-local function makeEntry(obj, id, name)
-	local e = {
-		obj = obj, id = id, auto = name == nil,
-		name = name or (id and ("pkt_" .. id)) or ("pkt_" .. (#entries + 1)),
-		cIn = 0, cOut = 0, samples = {}, learned = 0,
-	}
-	entries[#entries + 1] = e
-	if obj then byObj[obj] = e end
-	indexEntry(e)
-	return e
 end
 
 local function register(obj, name)
@@ -628,10 +804,23 @@ local function register(obj, name)
 		if name and e.auto then e.name, e.auto = name, false indexEntry(e) end
 		return e
 	end
-	e = makeEntry(obj, findPacketId(obj), name)
+	local id = findPacketId(obj)
+	local existing = id and byId[id]
+	if existing and not existing.obj then
+		-- placeholder dari hook OUT (id_N) digabung dengan objek asli
+		e = existing
+		e.obj = obj
+		byObj[obj] = e
+		if name then e.name, e.auto = name, false indexEntry(e) end
+		e.declTried = nil
+	else
+		e = makeEntry(obj, id, name)
+	end
+	e.chan = e.chan or detectChannel(obj)
 	local okL, ls = pcall(function() return rawget(obj, "getListeners")() end)
 	if okL and type(ls) == "table" then e.listeners = ls end
 	if state.active then attach(e) end
+	state.listDirty = true
 	return e
 end
 
@@ -681,11 +870,15 @@ local function scanPackets()
 end
 
 -- Hook OUT: process.client.sendReliable / sendUnreliable (id, writer, data)
-local function onOut(id, data)
+local function onOut(id, chan, data)
 	if not state.active then return end
-	local e = byId[id] or makeEntry(nil, id, "id_" .. tostring(id))
-	byId[id] = byId[id] or e
-	observe(e, "OUT", data)
+	local e = byId[id]
+	if not e then
+		e = makeEntry(nil, id, "id_" .. tostring(id))
+		e.auto = true
+		byId[id] = e
+	end
+	observe(e, "OUT", data, chan)
 end
 
 local function installClientHook()
@@ -703,11 +896,12 @@ local function installClientHook()
 	for _, fname in ipairs({ "sendReliable", "sendUnreliable" }) do
 		local f = rawget(client, fname)
 		if type(f) == "function" then
+			local chan = fname == "sendReliable" and "reliable" or "unreliable"
 			local orig
 			local ok = pcall(function()
 				orig = hookfunction(f, function(id, writer, data, ...)
 					local cb = getgenv and getgenv().__SS_out
-					if cb then pcall(cb, id, data) end
+					if cb then pcall(cb, id, chan, data) end
 					return orig(id, writer, data, ...)
 				end)
 			end)
@@ -724,7 +918,7 @@ local function wrapSendFallback(e)
 	if type(orig) ~= "function" then return end
 	e.origSend = orig
 	local ok = pcall(rawset, e.obj, "send", function(data, ...)
-		if state.active then pcall(observe, e, "OUT", data) end
+		if state.active then pcall(observe, e, "OUT", data, e.chan) end
 		return orig(data, ...)
 	end)
 	if not ok then e.origSend = nil end
@@ -825,7 +1019,6 @@ local function introspect(e)
 	if not obj then return false end
 	local cands = {}
 
-	-- kasus 1: reader/writer langsung berasal dari modul dataTypes.*
 	for _, key in ipairs({ "reader", "writer" }) do
 		local f = rawget(obj, key)
 		if type(f) == "function" then
@@ -833,7 +1026,6 @@ local function introspect(e)
 			if s and s:find("dataTypes", 1, true) then cands[#cands + 1] = { read = f, write = f } end
 		end
 	end
-	-- kasus 2: dataType ada di upvalue fungsi packet
 	if #cands == 0 then
 		for _, f in next, obj do
 			if type(f) == "function" then
@@ -843,7 +1035,6 @@ local function introspect(e)
 			end
 		end
 	end
-	-- kasus 3: satu tingkat lebih dalam
 	if #cands == 0 then
 		for _, f in next, obj do
 			if type(f) == "function" then
@@ -885,12 +1076,18 @@ local function headerOf(e)
 	return ("%s  (id %s)"):format(e.short, tostring(e.id or "?"))
 end
 
+local function relLine(e)
+	local c, src = chanInfo(e)
+	if not c then return "" end
+	return ("\n\treliabilityType = %q,%s"):format(c, src ~= "declared" and (" -- " .. src) or "")
+end
+
 local function declaredText(e)
 	local d = introspect(e)
 	if not d then
 		return "(tidak terbaca: executor tanpa debug.info/getupvalues, atau struktur modul ByteNet berbeda)\nGunakan bagian OBSERVED di bawah."
 	end
-	return ("ByteNet.definePacket({\n\tvalue = %s,\n})"):format(declExpr(d, 1))
+	return ("ByteNet.definePacket({\n\tvalue = %s,%s\n})"):format(declExpr(d, 1), relLine(e))
 end
 
 local function observedText(e)
@@ -913,13 +1110,13 @@ end
 
 local function guessText(e)
 	if not e.schema then return "(belum ada data)" end
-	return ("-- TEBAKAN minimal dari data nyata (tipe bisa lebih besar di definisi asli)\nByteNet.definePacket({\n\tvalue = %s,\n})"):format(nodeExpr(e.schema, 1))
+	return ("-- TEBAKAN minimal dari data nyata (tipe bisa lebih besar di definisi asli)\nByteNet.definePacket({\n\tvalue = %s,%s\n})"):format(nodeExpr(e.schema, 1), relLine(e))
 end
 
 local function lastSampleText(e)
 	local s = e.samples[#e.samples]
 	if not s then return "(belum ada sampel)" end
-	local out = { ("Sampel terakhir [%s] %s"):format(s.dir, s.time) }
+	local out = { ("Sampel terakhir [%s/%s] %s"):format(s.dir, s.chan or "?", s.time) }
 	tree(s.data, "data", 0, out, 0)
 	out[#out + 1] = ""
 	out[#out + 1] = "-- sebagai Lua:"
@@ -930,15 +1127,24 @@ end
 local function samplesText(e)
 	if #e.samples == 0 then return "(belum ada sampel)" end
 	local list = {}
-	for i, s in ipairs(e.samples) do list[i] = { dir = s.dir, time = s.time, data = s.data } end
+	for i, s in ipairs(e.samples) do list[i] = { dir = s.dir, chan = s.chan, time = s.time, data = s.data } end
 	return ("-- %s : %d sampel terakhir\nreturn %s"):format(headerOf(e), #list, luaSrc(list, 0, 0, {}))
+end
+
+local function countsLine(e)
+	return ("IN: R %d / U %d / ? %d | OUT: R %d / U %d / ? %d"):format(e.inR, e.inU, e.inX, e.outR, e.outU, e.outX)
 end
 
 local function packetReport(e)
 	local o = {}
 	o[#o + 1] = "=================================================="
 	o[#o + 1] = "PACKET " .. headerOf(e)
-	o[#o + 1] = ("Nama lengkap: %s | IN x%d | OUT x%d | sampel: %d"):format(e.name, e.cIn, e.cOut, #e.samples)
+	o[#o + 1] = ("Nama lengkap: %s | sampel: %d"):format(e.name, #e.samples)
+	o[#o + 1] = ("Channel: %s | %s"):format(chanText(e), countsLine(e))
+	if e.chan and (e.outR + e.outU) > 0 then
+		local obs = e.outR >= e.outU and "reliable" or "unreliable"
+		if obs ~= e.chan then o[#o + 1] = "PERINGATAN: channel declared (" .. e.chan .. ") berbeda dengan OUT teramati (" .. obs .. ")" end
+	end
 	o[#o + 1] = "=================================================="
 	o[#o + 1] = ""
 	o[#o + 1] = "[DECLARED] dibaca dari definisi ByteNet"
@@ -955,35 +1161,89 @@ local function packetReport(e)
 	return table.concat(o, "\n") .. "\n"
 end
 
+local function structSummary(e)
+	local d = introspect(e)
+	local desc = "?"
+	if d then
+		desc = d.kind
+		if d.fields then
+			local ks = sortedKeys(d.fields)
+			local names = {}
+			for i, k in ipairs(ks) do
+				if i > 6 then names[#names + 1] = "..." break end
+				names[#names + 1] = k .. ":" .. d.fields[k].kind
+			end
+			desc = "struct{" .. table.concat(names, ", ") .. "}"
+		elseif d.inner then
+			desc = d.kind .. "<" .. d.inner.kind .. ">"
+		end
+	elseif e.schema then
+		desc = "(observed) " .. typeLabel(e.schema)
+	end
+	return desc
+end
+
 local function summaryText()
 	local list = sortedEntries()
 	if #list == 0 then return "(belum ada packet. Klik Scan atau aktifkan Rekam Packet)" end
 	local out = {
-		("%s  %s  %s  %s  %s"):format(pad("ID", 5), pad("NAMA", 22), pad("IN", 6), pad("OUT", 6), "STRUCT (declared)"),
-		string.rep("-", 80),
+		("%s  %s  %s  %s  %s  %s"):format(pad("ID", 5), pad("NAMA", 22), pad("CH", 3), pad("IN", 6), pad("OUT", 6), "STRUCT (declared)"),
+		string.rep("-", 84),
+		"CH: R=reliable U=unreliable ~=heuristik ?=belum diketahui",
 	}
 	for _, e in ipairs(list) do
-		local d = introspect(e)
-		local desc = "?"
-		if d then
-			desc = d.kind
-			if d.fields then
-				local ks = sortedKeys(d.fields)
-				local names = {}
-				for i, k in ipairs(ks) do
-					if i > 6 then names[#names + 1] = "..." break end
-					names[#names + 1] = k .. ":" .. d.fields[k].kind
-				end
-				desc = "struct{" .. table.concat(names, ", ") .. "}"
-			elseif d.inner then
-				desc = d.kind .. "<" .. d.inner.kind .. ">"
-			end
-		elseif e.schema then
-			desc = "(observed) " .. typeLabel(e.schema)
-		end
-		out[#out + 1] = ("%s  %s  %s  %s  %s"):format(pad(e.id or "?", 5), pad(e.short, 22), pad(e.cIn, 6), pad(e.cOut, 6), desc)
+		out[#out + 1] = ("%s  %s  %s  %s  %s  %s"):format(pad(e.id or "?", 5), pad(e.short, 22), pad(chanTag(e), 3), pad(e.cIn, 6), pad(e.cOut, 6), structSummary(e))
 	end
 	return table.concat(out, "\n")
+end
+
+local function sumCounts()
+	local s = { inR = 0, inU = 0, inX = 0, outR = 0, outU = 0, outX = 0 }
+	for _, e in ipairs(entries) do
+		for k in pairs(s) do s[k] += e[k] end
+	end
+	return s
+end
+
+local function channelStatsText()
+	local s = sumCounts()
+	local el = state.t0 and math.max(os.clock() - state.t0, 0.001) or nil
+	local nR, nU, nX = 0, 0, 0
+	for _, e in ipairs(entries) do
+		local c = chanInfo(e)
+		if c == "reliable" then nR += 1 elseif c == "unreliable" then nU += 1 else nX += 1 end
+	end
+	local o = {
+		"STATISTIK CHANNEL",
+		string.rep("-", 60),
+		("Packet terdaftar : %d  (reliable %d | unreliable %d | belum diketahui %d)"):format(#entries, nR, nU, nX),
+		("IN  reliable     : %d"):format(s.inR),
+		("IN  unreliable   : %d"):format(s.inU),
+		("IN  belum jelas  : %d"):format(s.inX),
+		("OUT reliable     : %d"):format(s.outR),
+		("OUT unreliable   : %d"):format(s.outU),
+		("OUT belum jelas  : %d"):format(s.outX),
+		"",
+		("RemoteEvent ByteNet terhubung: %d"):format(remotesFound),
+		("Raw IN reliable   : %d event, %d byte"):format(Raw.reliable.n, Raw.reliable.bytes),
+		("Raw IN unreliable : %d event, %d byte"):format(Raw.unreliable.n, Raw.unreliable.bytes),
+	}
+	if el then
+		o[#o + 1] = ("Durasi rekam      : %.1f detik"):format(el)
+		o[#o + 1] = ("Rata-rata IN/OUT  : %.1f / %.1f packet per detik"):format((s.inR + s.inU + s.inX) / el, (s.outR + s.outU + s.outX) / el)
+		o[#o + 1] = ("Raw byte IN/detik : reliable %.0f | unreliable %.0f"):format(Raw.reliable.bytes / el, Raw.unreliable.bytes / el)
+	end
+	o[#o + 1] = ""
+	o[#o + 1] = "TOP PACKET (paling ramai)"
+	o[#o + 1] = ("%s  %s  %s  %s  %s"):format(pad("NAMA", 22), pad("CH", 3), pad("IN", 7), pad("OUT", 7), "PER DETIK")
+	local list = table.clone(entries)
+	table.sort(list, function(a, b) return (a.cIn + a.cOut) > (b.cIn + b.cOut) end)
+	for i = 1, math.min(15, #list) do
+		local e = list[i]
+		if e.cIn + e.cOut == 0 then break end
+		o[#o + 1] = ("%s  %s  %s  %s  %s"):format(pad(e.short, 22), pad(chanTag(e), 3), pad(e.cIn, 7), pad(e.cOut, 7), el and ("%.1f"):format((e.cIn + e.cOut) / el) or "-")
+	end
+	return table.concat(o, "\n")
 end
 
 local function feedText()
@@ -997,6 +1257,8 @@ local function allReport()
 		("PlaceId: %s | dibuat: %s | packet: %d\n"):format(tostring(game.PlaceId), os.date("%Y-%m-%d %H:%M:%S"), #entries),
 		summaryText(),
 		"",
+		channelStatsText(),
+		"",
 	}
 	for _, e in ipairs(sortedEntries()) do out[#out + 1] = packetReport(e) end
 	return table.concat(out, "\n")
@@ -1005,6 +1267,7 @@ end
 local function logPasses(r)
 	if logCfg.dir ~= "Semua" and r.dir ~= logCfg.dir then return false end
 	if logCfg.cat ~= "Semua" and r.cat ~= logCfg.cat then return false end
+	if logCfg.chan ~= "Semua" and (r.chan or "?") ~= logCfg.chan then return false end
 	if logCfg.name ~= "" then
 		if not (tostring(r.name):lower():find(logCfg.name, 1, true) or tostring(r.id):find(logCfg.name, 1, true)) then return false end
 	end
@@ -1030,7 +1293,8 @@ local function logText()
 	local out = { ("Log packet: %d entri cocok filter (total %d) | movement dilewati: %d"):format(#list, #Store.log, logCfg.dropped), "" }
 	for i = math.max(1, #list - state.logLines + 1), #list do
 		local r = list[i]
-		out[#out + 1] = clipLine(("#%d %s %-3s [%s] %s(%s) %s"):format(r.n, r.time, r.dir, r.cat, r.name, tostring(r.id or "?"), lit(r.data)), 200)
+		local tag = r.chan and (r.chan == "reliable" and "R" or "U") or "?"
+		out[#out + 1] = clipLine(("#%d %s %-3s %s [%s] %s(%s) %s"):format(r.n, r.time, r.dir, tag, r.cat, r.name, tostring(r.id or "?"), lit(r.data)), 200)
 	end
 	return table.concat(out, "\n")
 end
@@ -1049,7 +1313,7 @@ end
 local function logToLua(list, title)
 	local plain = {}
 	for i, r in ipairs(list) do
-		plain[i] = { n = r.n, time = r.time, dir = r.dir, name = r.name, id = r.id, cat = r.cat, data = r.data }
+		plain[i] = { n = r.n, time = r.time, dir = r.dir, name = r.name, id = r.id, chan = r.chan, cat = r.cat, data = r.data }
 	end
 	return ("-- %s\n-- Dibuat: %s | Entri: %d | PlaceId: %s\nreturn %s\n"):format(
 		title, os.date("%Y-%m-%d %H:%M:%S"), #plain, tostring(game.PlaceId), luaSrc(plain, 0, 0, {}))
@@ -1064,8 +1328,10 @@ local function registryLua()
 	local list = {}
 	for _, e in ipairs(sortedEntries()) do
 		local d = introspect(e)
+		local c, src = chanInfo(e)
 		list[#list + 1] = {
-			id = e.id, name = e.short, fullName = e.name, countIn = e.cIn, countOut = e.cOut,
+			id = e.id, name = e.short, fullName = e.name, channel = c, channelSource = src,
+			countIn = e.cIn, countOut = e.cOut,
 			declared = d and declExpr(d, 0) or nil,
 			observed = e.schema and typeLabel(e.schema) or nil,
 		}
@@ -1074,227 +1340,311 @@ local function registryLua()
 		os.date("%Y-%m-%d %H:%M:%S"), #list, tostring(game.PlaceId), luaSrc(list, 0, 0, {}))
 end
 
-local MODES = {
-	"Struct lengkap",
-	"Declared (definisi ByteNet)",
-	"Observed (tabel field)",
-	"Sample terakhir (tree)",
-	"Semua sampel (Lua table)",
-	"Tabel packet (semua)",
-	"Log packet (sesuai filter)",
-	"Chat log",
-	"Live feed ringkas",
-	"Laporan SEMUA packet",
-}
+------------------------------------------------------------------
+-- FRAMEWORK GENERATOR (modul, dokumentasi, template)
+------------------------------------------------------------------
+local function valueExpr(e, ind)
+	local d = introspect(e)
+	if d then return declExpr(d, ind), "declared" end
+	if e.schema then return nodeExpr(e.schema, ind), "observed" end
+	return "ByteNet.unknown", "unknown"
+end
 
-local function render()
-	local m, e = state.view, state.selected
-	if m <= 5 and not e then return "(pilih packet dulu di dropdown)", "-" end
-	local text, title
-	if m == 1 then text, title = packetReport(e), headerOf(e)
-	elseif m == 2 then text, title = declaredText(e), "Declared - " .. headerOf(e)
-	elseif m == 3 then text, title = observedText(e) .. "\n\n" .. guessText(e), "Observed - " .. headerOf(e)
-	elseif m == 4 then text, title = lastSampleText(e), "Sample - " .. headerOf(e)
-	elseif m == 5 then text, title = samplesText(e), "Sampel - " .. headerOf(e)
-	elseif m == 6 then text, title = summaryText(), "Tabel packet"
-	elseif m == 7 then text, title = logText(), "Log packet"
-	elseif m == 8 then text, title = chatText(), "Chat log"
-	elseif m == 9 then text, title = feedText(), "Live feed"
-	else text, title = allReport(), "Laporan semua packet" end
-	return text, title
+local function frameworkModule()
+	local list = sortedEntries()
+	local o = {
+		("-- Packets.lua  (dibuat StructScope v%s)"):format(VERSION),
+		("-- PlaceId: %s | dibuat: %s | packet: %d"):format(tostring(game.PlaceId), os.date("%Y-%m-%d %H:%M:%S"), #list),
+		"-- Struct 'observed' hanya sebesar data yang pernah muncul. Periksa lagi sebelum dipakai.",
+		"-- reliabilityType: reliable = RemoteEvent (terurut, pasti sampai), unreliable = UnreliableRemoteEvent.",
+		"",
+		"local ByteNet = require(game:GetService(\"ReplicatedStorage\"):WaitForChild(\"ByteNet\")) -- sesuaikan path",
+		"",
+		"return ByteNet.defineNamespace(\"app\", function()",
+		"\treturn {",
+		"\t\tpackets = {",
+	}
+	local used = {}
+	for _, e in ipairs(list) do
+		local key = identOf(e.short)
+		if used[key] then key = key .. "_" .. tostring(e.id or #used) end
+		used[key] = true
+		local expr, src = valueExpr(e, 4)
+		local c, csrc = chanInfo(e)
+		o[#o + 1] = ("\t\t\t-- id %s | struct: %s | channel: %s"):format(tostring(e.id or "?"), src, c and (c .. " (" .. csrc .. ")") or "tidak diketahui")
+		o[#o + 1] = ("\t\t\t%s = ByteNet.definePacket({"):format(key)
+		o[#o + 1] = ("\t\t\t\tvalue = %s,"):format(expr)
+		if c then o[#o + 1] = ("\t\t\t\treliabilityType = %q,"):format(c) end
+		o[#o + 1] = "\t\t\t}),"
+	end
+	o[#o + 1] = "\t\t},"
+	o[#o + 1] = "\t}"
+	o[#o + 1] = "end)"
+	return table.concat(o, "\n") .. "\n"
+end
+
+local function templateText(e)
+	local c, src = chanInfo(e)
+	local s = e.samples[#e.samples]
+	local o = {
+		("-- Template script: packet %s (id %s)"):format(e.short, tostring(e.id or "?")),
+		("-- Channel: %s"):format(c and (c:upper() .. " (" .. src .. ")") or "tidak diketahui"),
+		"",
+		"local SS = getgenv().StructScope -- jalankan StructScope dulu",
+		("local packet = SS.Packets.get(%q) -- objek ByteNet asli (listen / send)"):format(e.short),
+		"",
+		"-- 1) Pantau pasif lewat StructScope (IN dan OUT, tanpa mengubah apa pun)",
+		"local unsubscribe = SS.Subscribe(function(name, dir, chan, data)",
+		("\tif name ~= %q then return end"):format(e.short),
+		"\tprint(dir, chan, data)",
+		"end)",
+		"-- unsubscribe() untuk berhenti",
+		"",
+		"-- 2) Listener langsung ke packet (IN dari server)",
+		"if packet then",
+		"\tpacket.listen(function(data)",
+		"\t\tprint(\"diterima\", data)",
+		"\tend)",
+		"end",
+		"",
+		"-- 3) Mengirim ke server (AKTIF, bukan bagian debugger). Struct dari sampel terakhir:",
+	}
+	if s then
+		local src2 = luaSrc(s.data, 0, 0, {})
+		o[#o + 1] = "local sample = " .. src2
+		o[#o + 1] = "-- packet.send(sample)"
+	else
+		o[#o + 1] = "-- (belum ada sampel; rekam dulu)"
+		o[#o + 1] = "-- packet.send({ ... })"
+	end
+	o[#o + 1] = ""
+	o[#o + 1] = "-- Struct:"
+	local decl = declaredText(e)
+	for line in (decl .. "\n"):gmatch("(.-)\n") do o[#o + 1] = "-- " .. line end
+	return table.concat(o, "\n") .. "\n"
+end
+
+local DOC_INTRO = [==[
+## Konsep ByteNet singkat
+
+- **Packet** = definisi pesan dengan `id` unik, struct data, dan channel.
+- **reliable** (default): lewat RemoteEvent. Urutan terjamin dan pasti sampai.
+- **unreliable**: lewat UnreliableRemoteEvent. Bisa hilang atau tidak berurutan, ukuran dibatasi. Cocok untuk data sering seperti posisi.
+- Arah **IN** = server ke client (listener). Arah **OUT** = client ke server (send).
+- Data yang dilihat debugger adalah hasil decode (table), bukan buffer mentah.
+
+## Cara mengambil data dari StructScope untuk script baru
+
+```lua
+local SS = getgenv().StructScope            -- StructScope harus sudah jalan
+
+local packet = SS.Packets.get("NamaPacket") -- objek ByteNet asli
+local info   = SS.Packets.info("NamaPacket")-- id, channel, struct, schema, counts
+
+-- pantau semua packet (pasif)
+local off = SS.Subscribe(function(name, dir, chan, data)
+	print(name, dir, chan, data)
+end)
+```
+
+## Alur kerja membuat script baru
+
+1. Nyalakan **Rekam Packet**, lakukan aksi di game.
+2. Lihat struct di tab **Viewer** (Declared lebih akurat dari Observed).
+3. Pakai tab **Framework**: salin `Packets.lua`, template per packet, atau dokumentasi ini.
+4. Tulis script baru memakai `SS.Packets.get(...)` dan `SS.Subscribe(...)`.
+5. Cek kolom channel sebelum menulis ulang definisi: reliable dan unreliable tidak bisa dipertukarkan.
+
+## Arti tanda channel
+
+| Tanda | Arti |
+| --- | --- |
+| R / U | reliable / unreliable, pasti (declared atau OUT teramati) |
+| R~ / U~ | tebakan dari RemoteEvent yang memicu packet |
+| ? | belum diketahui |
+]==]
+
+local function mdEscape(s) return (tostring(s):gsub("|", "\\|")) end
+
+local function docsMarkdown()
+	local list = sortedEntries()
+	local o = {
+		"# Dokumentasi Packet ByteNet",
+		"",
+		("- PlaceId: `%s`"):format(tostring(game.PlaceId)),
+		("- Dibuat: %s"):format(os.date("%Y-%m-%d %H:%M:%S")),
+		("- Jumlah packet: %d"):format(#list),
+		("- Dibuat oleh: StructScope v%s"):format(VERSION),
+		"",
+		"## Ringkasan packet",
+		"",
+		"| ID | Nama | Channel | Arah | IN | OUT | Struct |",
+		"| --- | --- | --- | --- | --- | --- | --- |",
+	}
+	for _, e in ipairs(list) do
+		local dirs = (e.cIn > 0 and e.cOut > 0) and "IN/OUT" or (e.cIn > 0 and "IN" or (e.cOut > 0 and "OUT" or "-"))
+		local c = chanInfo(e)
+		o[#o + 1] = ("| %s | `%s` | %s | %s | %d | %d | %s |"):format(
+			tostring(e.id or "?"), e.short, c or "?", dirs, e.cIn, e.cOut, mdEscape(structSummary(e)))
+	end
+	o[#o + 1] = ""
+	o[#o + 1] = DOC_INTRO
+	o[#o + 1] = ""
+	o[#o + 1] = "## Detail packet"
+	for _, e in ipairs(list) do
+		o[#o + 1] = ""
+		o[#o + 1] = ("### %s (id %s)"):format(e.short, tostring(e.id or "?"))
+		o[#o + 1] = ""
+		o[#o + 1] = ("- Nama lengkap: `%s`"):format(e.name)
+		o[#o + 1] = ("- Channel: **%s**"):format(chanText(e))
+		o[#o + 1] = ("- %s"):format(countsLine(e))
+		o[#o + 1] = ""
+		o[#o + 1] = "**Declared**"
+		o[#o + 1] = ""
+		o[#o + 1] = "```lua"
+		o[#o + 1] = declaredText(e)
+		o[#o + 1] = "```"
+		if e.schema then
+			local rows = {}
+			flatten(e.schema, "", rows, false)
+			o[#o + 1] = ""
+			o[#o + 1] = ("**Observed** (dari %d data)"):format(e.schema.n)
+			o[#o + 1] = ""
+			o[#o + 1] = "| Field | Tipe | Wajib | Detail |"
+			o[#o + 1] = "| --- | --- | --- | --- |"
+			for _, r in ipairs(rows) do
+				o[#o + 1] = ("| `%s` | %s | %s | %s |"):format(mdEscape(r.path), mdEscape(typeLabel(r.node)), r.opt and "opsional" or "ya", mdEscape(detail(r.node)))
+			end
+		end
+		local s = e.samples[#e.samples]
+		if s then
+			o[#o + 1] = ""
+			o[#o + 1] = ("**Contoh data** (%s, %s)"):format(s.dir, s.chan or "?")
+			o[#o + 1] = ""
+			o[#o + 1] = "```lua"
+			o[#o + 1] = "return " .. luaSrc(s.data, 0, 0, {})
+			o[#o + 1] = "```"
+		end
+	end
+	return table.concat(o, "\n") .. "\n"
 end
 
 ------------------------------------------------------------------
--- VIEWER (panel teks, bisa digeser)
+-- RENDER (pilihan tampilan viewer)
+------------------------------------------------------------------
+local MODES = {
+	{ key = "full",      label = "Struct lengkap",              needsPacket = true },
+	{ key = "declared",  label = "Declared (definisi ByteNet)", needsPacket = true },
+	{ key = "observed",  label = "Observed (tabel field)",      needsPacket = true },
+	{ key = "sample",    label = "Sample terakhir (tree)",      needsPacket = true },
+	{ key = "samples",   label = "Semua sampel (Lua table)",    needsPacket = true },
+	{ key = "template",  label = "Template script (terpilih)",  needsPacket = true },
+	{ key = "registry",  label = "Tabel packet (semua)" },
+	{ key = "stats",     label = "Statistik channel (R/U)" },
+	{ key = "log",       label = "Log packet (sesuai filter)" },
+	{ key = "chat",      label = "Chat log" },
+	{ key = "feed",      label = "Live feed ringkas" },
+	{ key = "report",    label = "Laporan SEMUA packet" },
+	{ key = "framework", label = "Modul Packets.lua (framework)" },
+	{ key = "docs",      label = "Dokumentasi Markdown" },
+}
+local MODE_LABELS, MODE_BY_LABEL, MODE_BY_KEY = {}, {}, {}
+for i, m in ipairs(MODES) do
+	MODE_LABELS[i] = m.label
+	MODE_BY_LABEL[m.label] = m
+	MODE_BY_KEY[m.key] = m
+end
+
+local function render()
+	local m, e = MODE_BY_KEY[state.view] or MODES[1], state.selected
+	if m.needsPacket and not e then return "(pilih packet dulu di dropdown)", "-" end
+	local k = m.key
+	if k == "full" then return packetReport(e), headerOf(e)
+	elseif k == "declared" then return declaredText(e), "Declared - " .. headerOf(e)
+	elseif k == "observed" then return observedText(e) .. "\n\n" .. guessText(e), "Observed - " .. headerOf(e)
+	elseif k == "sample" then return lastSampleText(e), "Sample - " .. headerOf(e)
+	elseif k == "samples" then return samplesText(e), "Sampel - " .. headerOf(e)
+	elseif k == "template" then return templateText(e), "Template - " .. headerOf(e)
+	elseif k == "registry" then return summaryText(), "Tabel packet"
+	elseif k == "stats" then return channelStatsText(), "Statistik channel"
+	elseif k == "log" then return logText(), "Log packet"
+	elseif k == "chat" then return chatText(), "Chat log"
+	elseif k == "feed" then return feedText(), "Live feed"
+	elseif k == "framework" then return frameworkModule(), "Packets.lua"
+	elseif k == "docs" then return docsMarkdown(), "Dokumentasi"
+	end
+	return allReport(), "Laporan semua packet"
+end
+
+------------------------------------------------------------------
+-- VIEWER (state; UI dibuat di dalam menu Linoria)
 ------------------------------------------------------------------
 local Viewer = { full = "", title = "" }
-do
-	local parent
-	if gethui then
-		local ok, h = pcall(gethui)
-		if ok then parent = h end
+
+function Viewer.set(text, ttl)
+	text = CFG.Ascii and ascii(text) or text
+	ttl = CFG.Ascii and ascii(ttl or "") or (ttl or "")
+	Viewer.full, Viewer.title = text, ttl
+	if Viewer.titleLabel then
+		pcall(function() Viewer.titleLabel:SetText("Tampil: " .. ttl) end)
 	end
-	parent = parent or (pcall(function() return CoreGui.Name end) and CoreGui) or LocalPlayer:WaitForChild("PlayerGui")
-
-	local gui = Instance.new("ScreenGui")
-	gui.Name = "StructScopeViewer"
-	gui.ResetOnSpawn = false
-	gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-	gui.DisplayOrder = 999
-	gui.Enabled = false
-	gui.Parent = parent
-	Viewer.gui = gui
-
-	local function corner(o, r)
-		local c = Instance.new("UICorner")
-		c.CornerRadius = UDim.new(0, r or 6)
-		c.Parent = o
-	end
-
-	local main = Instance.new("Frame")
-	main.Size = UDim2.fromOffset(470, 300)
-	main.Position = UDim2.new(1, -480, 1, -310)
-	main.BackgroundColor3 = Color3.fromRGB(22, 22, 28)
-	main.BorderSizePixel = 0
-	main.Parent = gui
-	corner(main, 8)
-
-	local bar = Instance.new("Frame")
-	bar.Size = UDim2.new(1, 0, 0, 30)
-	bar.BackgroundColor3 = Color3.fromRGB(32, 32, 42)
-	bar.BorderSizePixel = 0
-	bar.Parent = main
-	corner(bar, 8)
-
-	local title = Instance.new("TextLabel")
-	title.BackgroundTransparency = 1
-	title.Size = UDim2.new(1, -90, 1, 0)
-	title.Position = UDim2.fromOffset(10, 0)
-	title.Font = Enum.Font.Code
-	title.TextSize = 13
-	title.TextColor3 = Color3.fromRGB(235, 235, 245)
-	title.TextXAlignment = Enum.TextXAlignment.Left
-	title.TextTruncate = Enum.TextTruncate.AtEnd
-	title.Text = "StructScope Viewer"
-	title.Parent = bar
-
-	local body = Instance.new("Frame")
-	body.Size = UDim2.new(1, 0, 1, -30)
-	body.Position = UDim2.fromOffset(0, 30)
-	body.BackgroundTransparency = 1
-	body.Parent = main
-
-	local function barBtn(text, x, color, cb)
-		local b = Instance.new("TextButton")
-		b.Size = UDim2.fromOffset(26, 20)
-		b.Position = UDim2.new(1, x, 0.5, -10)
-		b.BackgroundColor3 = color
-		b.Text = text
-		b.Font = Enum.Font.Code
-		b.TextSize = 13
-		b.TextColor3 = Color3.new(1, 1, 1)
-		b.Parent = bar
-		corner(b, 4)
-		track(b.MouseButton1Click:Connect(cb))
-	end
-	local minimized = false
-	barBtn("-", -58, Color3.fromRGB(90, 90, 110), function()
-		minimized = not minimized
-		body.Visible = not minimized
-		main.Size = minimized and UDim2.fromOffset(470, 30) or UDim2.fromOffset(470, 300)
-	end)
-	barBtn("X", -30, Color3.fromRGB(190, 60, 60), function() gui.Enabled = false end)
-
-	local dragging, dragStart, startPos
-	track(bar.InputBegan:Connect(function(i)
-		if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then
-			dragging, dragStart, startPos = true, i.Position, main.Position
-		end
-	end))
-	track(UserInputService.InputChanged:Connect(function(i)
-		if dragging and (i.UserInputType == Enum.UserInputType.MouseMovement or i.UserInputType == Enum.UserInputType.Touch) then
-			local d = i.Position - dragStart
-			main.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X, startPos.Y.Scale, startPos.Y.Offset + d.Y)
-		end
-	end))
-	track(UserInputService.InputEnded:Connect(function(i)
-		if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then
-			dragging = false
-		end
-	end))
-
-	local scroll = Instance.new("ScrollingFrame")
-	scroll.Size = UDim2.new(1, -12, 1, -48)
-	scroll.Position = UDim2.fromOffset(6, 6)
-	scroll.BackgroundColor3 = Color3.fromRGB(14, 14, 20)
-	scroll.BorderSizePixel = 0
-	scroll.ScrollBarThickness = 6
-	scroll.CanvasSize = UDim2.new()
-	scroll.AutomaticCanvasSize = Enum.AutomaticSize.XY
-	scroll.Parent = body
-	corner(scroll, 6)
-
-	local box = Instance.new("TextBox")
-	box.Size = UDim2.new(0, 0, 0, 0)
-	box.AutomaticSize = Enum.AutomaticSize.XY
-	box.Position = UDim2.fromOffset(4, 4)
-	box.BackgroundTransparency = 1
-	box.MultiLine = true
-	box.ClearTextOnFocus = false
-	box.TextEditable = false
-	box.TextWrapped = false
-	box.TextXAlignment = Enum.TextXAlignment.Left
-	box.TextYAlignment = Enum.TextYAlignment.Top
-	box.Font = Enum.Font.Code
-	box.TextSize = 12
-	box.TextColor3 = Color3.fromRGB(215, 222, 240)
-	box.Text = ""
-	box.Parent = scroll
-	local minSize = Instance.new("UISizeConstraint")
-	minSize.MinSize = Vector2.new(440, 220)
-	minSize.Parent = box
-
-	local row = Instance.new("Frame")
-	row.Size = UDim2.new(1, -12, 0, 28)
-	row.Position = UDim2.new(0, 6, 1, -34)
-	row.BackgroundTransparency = 1
-	row.Parent = body
-	local layout = Instance.new("UIListLayout")
-	layout.FillDirection = Enum.FillDirection.Horizontal
-	layout.Padding = UDim.new(0, 6)
-	layout.Parent = row
-
-	function Viewer.addButton(text, color, cb)
-		local b = Instance.new("TextButton")
-		b.Size = UDim2.fromOffset(90, 28)
-		b.BackgroundColor3 = color
-		b.Text = text
-		b.Font = Enum.Font.Code
-		b.TextSize = 12
-		b.TextColor3 = Color3.new(1, 1, 1)
-		b.Parent = row
-		corner(b, 5)
-		track(b.MouseButton1Click:Connect(cb))
-	end
-
-	function Viewer.set(text, ttl)
-		text = CFG.Ascii and ascii(text) or text
-		Viewer.full = text
-		Viewer.title = ttl or ""
-		title.Text = "StructScope - " .. (CFG.Ascii and ascii(ttl or "") or (ttl or ""))
+	if Viewer.box then
 		if #text > CFG.TextLimit then
-			box.Text = text:sub(1, CFG.TextLimit) .. ("\n\n... [dipotong, total %d karakter. Pakai Copy / Save untuk teks penuh]"):format(#text)
+			Viewer.box.Text = text:sub(1, CFG.TextLimit) .. ("\n\n... [dipotong, total %d karakter. Pakai Copy / Save untuk teks penuh]"):format(#text)
 		else
-			box.Text = text
+			Viewer.box.Text = text
 		end
 	end
-	function Viewer.show(v) gui.Enabled = v end
-	function Viewer.applyTheme(t)
-		main.BackgroundColor3 = t.Main
-		bar.BackgroundColor3 = t.Background
-		scroll.BackgroundColor3 = t.View
-		box.TextColor3 = t.Font
-		title.TextColor3 = t.Font
-	end
-	function Viewer.toggle() gui.Enabled = not gui.Enabled end
+end
+
+function Viewer.isOpen()
+	if Library.Toggled == false then return false end
+	if state.minimized then return false end
+	local ok, vis = pcall(function() return Viewer.tab.Container.Visible end)
+	if ok and type(vis) == "boolean" then return vis end
+	return true
+end
+
+function Viewer.show()
+	if Viewer.tab then pcall(function() Viewer.tab:ShowTab() end) end
+end
+
+function Viewer.applyTheme(t)
+	if not Viewer.holder then return end
+	Viewer.holder.BackgroundColor3 = t.Outline
+	Viewer.scroll.BackgroundColor3 = t.View
+	Viewer.box.TextColor3 = t.Font
 end
 
 ------------------------------------------------------------------
 -- EXPORT
 ------------------------------------------------------------------
-local function writeOut(prefix, text, ext)
-	ext = ext or "txt"
-	if not writefile then return nil, "writefile tidak didukung executor" end
-	local dir = "StructScope"
+local function ensureDir(dir)
 	pcall(function()
 		if makefolder and not (isfolder and isfolder(dir)) then makefolder(dir) end
 	end)
+end
+
+local function writeOut(prefix, text, ext, subdir)
+	ext = ext or "txt"
+	if not writefile then return nil, "writefile tidak didukung executor" end
+	local dir = "StructScope"
+	ensureDir(dir)
+	if subdir then
+		dir = dir .. "/" .. subdir
+		ensureDir(dir)
+	end
 	local path = ("%s/%s_%d.%s"):format(dir, prefix, os.time(), ext)
+	if subdir then path = ("%s/%s.%s"):format(dir, prefix, ext) end
 	if not pcall(writefile, path, text) then
 		path = ("%s_%d.%s"):format(prefix, os.time(), ext)
 		if not pcall(writefile, path, text) then return nil, "gagal menulis file" end
 	end
 	return path
+end
+
+local function safeName(s)
+	return (ascii(s ~= "" and s or "view"):gsub("[^%w_%-]", "_"))
 end
 
 local function currentText()
@@ -1305,7 +1655,7 @@ end
 local function showView()
 	local text, title = render()
 	Viewer.set(text, title)
-	Viewer.show(true)
+	Viewer.show()
 	state.dirty = false
 end
 
@@ -1313,7 +1663,7 @@ end
 -- START / STOP
 ------------------------------------------------------------------
 local labelMap = {}
-local ddPacket, ddMute, statusLabel
+local ddPacket, ddMute, statusLabel, statLabel, modeDD
 
 local function labelOf(e) return ("%s (id %s)"):format(e.short, tostring(e.id or "?")) end
 
@@ -1348,6 +1698,7 @@ local function startSpy()
 	if starting then return end
 	starting = true
 	state.active = true
+	state.t0 = state.t0 or os.clock()
 	notify("Scan packet ByteNet ...", 3)
 	connectChatService()
 	task.spawn(function()
@@ -1357,60 +1708,250 @@ local function startSpy()
 		if not okC then
 			for _, e in ipairs(entries) do wrapSendFallback(e) end
 		end
+		local nRem = connectRemotes()
+		state.lastScan = os.clock()
 		refreshLists()
 		starting = false
 		state.dirty = true
-		notify(("Aktif: %d packet (%d baru). OUT: %s"):format(#entries, added, okC and "hook process.client" or ("fallback obj.send (" .. tostring(errC) .. ")")), 6)
+		notify(("Aktif: %d packet (%d baru), remote %d. OUT: %s"):format(
+			#entries, added, nRem, okC and "hook process.client" or ("fallback obj.send (" .. tostring(errC) .. ")")), 6)
 	end)
 end
 
 local function stopSpy()
 	state.active = false
 	for _, e in ipairs(entries) do detach(e) end
+	disconnectRemotes()
 	if chatConn then pcall(function() chatConn:Disconnect() end) chatConn = nil end
 	state.dirty = true
 end
 
 local function clearAll()
-	for _, e in ipairs(entries) do
-		e.schema, e.samples, e.cIn, e.cOut, e.learned = nil, {}, 0, 0, 0
-	end
+	for _, e in ipairs(entries) do resetEntry(e) end
 	table.clear(Store.feed)
 	table.clear(Store.log)
 	table.clear(Store.chat)
+	table.clear(Chan.pending)
+	Raw.reliable.n, Raw.reliable.bytes, Raw.unreliable.n, Raw.unreliable.bytes = 0, 0, 0, 0
 	logCfg.seq, logCfg.dropped = 0, 0
+	state.t0 = state.active and os.clock() or nil
 	state.dirty = true
 end
+
+------------------------------------------------------------------
+-- API UNTUK SCRIPT BARU: getgenv().StructScope
+------------------------------------------------------------------
+local function lookup(k)
+	if type(k) == "number" then return byId[k] end
+	if type(k) == "string" then return byName[k:lower()] end
+	return nil
+end
+
+local API = {
+	Version = VERSION,
+	Packets = {
+		get = function(k) local e = lookup(k) return e and e.obj or nil end,
+		info = function(k)
+			local e = lookup(k)
+			if not e then return nil end
+			local c, src = chanInfo(e)
+			return {
+				id = e.id, name = e.short, fullName = e.name, channel = c, source = src,
+				struct = introspect(e), schema = e.schema,
+				counts = { inR = e.inR, inU = e.inU, inX = e.inX, outR = e.outR, outU = e.outU, outX = e.outX },
+				samples = e.samples,
+			}
+		end,
+		list = function()
+			local out = {}
+			for _, e in ipairs(sortedEntries()) do out[#out + 1] = e.short end
+			return out
+		end,
+	},
+	Subscribe = function(cb)
+		if type(cb) ~= "function" then return function() end end
+		Subs[#Subs + 1] = cb
+		return function()
+			local i = table.find(Subs, cb)
+			if i then table.remove(Subs, i) end
+		end
+	end,
+	Log = Store.log,
+	Chat = Store.chat,
+	Stats = function()
+		local s = sumCounts()
+		s.rawReliable, s.rawUnreliable = Raw.reliable, Raw.unreliable
+		return s
+	end,
+	Export = { framework = frameworkModule, docs = docsMarkdown, report = allReport },
+}
 
 ------------------------------------------------------------------
 -- LINORIA UI
 ------------------------------------------------------------------
 local Window = Library:CreateWindow({
-	Title = "StructScope",
+	Title = "StructScope v" .. VERSION,
 	Center = true,
 	AutoShow = true,
 	TabPadding = 6,
 	MenuFadeTime = 0.15,
-	Size = UDim2.fromOffset(470, 330),
+	Size = UDim2.fromOffset(720, 450),
 })
 
 local Tabs = {
 	Main  = Window:AddTab("Utama"),
+	View  = Window:AddTab("Viewer"),
 	Log   = Window:AddTab("Log"),
 	Copy  = Window:AddTab("Copy"),
+	Frame = Window:AddTab("Framework"),
 	Theme = Window:AddTab("Tema"),
 	Info  = Window:AddTab("Info"),
 }
+Viewer.tab = Tabs.View
+
+-- panel teks di dalam tab Viewer
+local GBText = Tabs.View:AddLeftGroupbox("Isi Struct")
+Viewer.titleLabel = GBText:AddLabel("Tampil: -")
+do
+	local holder = Instance.new("Frame")
+	holder.Size = UDim2.new(1, 0, 0, 300)
+	holder.BackgroundColor3 = Library.OutlineColor
+	holder.BorderSizePixel = 0
+	holder.Parent = GBText.Container
+
+	local scroll = Instance.new("ScrollingFrame")
+	scroll.Size = UDim2.new(1, -2, 1, -2)
+	scroll.Position = UDim2.fromOffset(1, 1)
+	scroll.BackgroundColor3 = Color3.fromRGB(12, 15, 20)
+	scroll.BorderSizePixel = 0
+	scroll.ScrollBarThickness = 6
+	scroll.CanvasSize = UDim2.new()
+	scroll.AutomaticCanvasSize = Enum.AutomaticSize.XY
+	scroll.ScrollingDirection = Enum.ScrollingDirection.XY
+	scroll.Parent = holder
+
+	local box = Instance.new("TextBox")
+	box.Size = UDim2.new(0, 0, 0, 0)
+	box.AutomaticSize = Enum.AutomaticSize.XY
+	box.Position = UDim2.fromOffset(4, 4)
+	box.BackgroundTransparency = 1
+	box.MultiLine = true
+	box.ClearTextOnFocus = false
+	box.TextEditable = false
+	box.TextWrapped = false
+	box.TextXAlignment = Enum.TextXAlignment.Left
+	box.TextYAlignment = Enum.TextYAlignment.Top
+	box.Font = Enum.Font.Code
+	box.TextSize = 12
+	box.TextColor3 = Color3.fromRGB(215, 222, 240)
+	box.Text = ""
+	box.Parent = scroll
+	local minSize = Instance.new("UISizeConstraint")
+	minSize.MinSize = Vector2.new(300, 200)
+	minSize.Parent = box
+
+	Viewer.holder, Viewer.scroll, Viewer.box = holder, scroll, box
+	pcall(function() GBText:Resize() end)
+end
+
+-- minimize / close di title bar menu
+local WinCtl = { minimized = false, hidden = {}, btns = {} }
+do
+	local holder = Window.Holder
+	if not holder then
+		pcall(function()
+			for _, c in ipairs(Library.ScreenGui:GetChildren()) do
+				if c:IsA("Frame") and c.AbsoluteSize.X > 400 then holder = c break end
+			end
+		end)
+	end
+	WinCtl.holder = holder
+
+	function WinCtl.setMinimized(v)
+		local h = WinCtl.holder
+		if not h then notify("Minimize tidak didukung versi Linoria ini.", 3) return end
+		if v then
+			WinCtl.fullSize = h.Size
+			WinCtl.hidden = {}
+			local inner = h:FindFirstChildOfClass("Frame")
+			if inner then
+				for _, c in ipairs(inner:GetChildren()) do
+					if c:IsA("GuiObject") and c.Visible and c.AbsoluteSize.Y > 40 then
+						c.Visible = false
+						WinCtl.hidden[#WinCtl.hidden + 1] = c
+					end
+				end
+			end
+			h.Size = UDim2.new(h.Size.X.Scale, h.Size.X.Offset, 0, 26)
+		else
+			for _, c in ipairs(WinCtl.hidden) do c.Visible = true end
+			if WinCtl.fullSize then h.Size = WinCtl.fullSize end
+		end
+		WinCtl.minimized = v
+		state.minimized = v
+		state.dirty = true
+		if WinCtl.minBtn then WinCtl.minBtn.Text = v and "+" or "-" end
+	end
+	function WinCtl.toggle() WinCtl.setMinimized(not WinCtl.minimized) end
+
+	function WinCtl.unload()
+		local fn = getgenv and getgenv().__StructScopeUnload
+		if fn then fn() else pcall(function() Library:Unload() end) end
+	end
+
+	function WinCtl.applyTheme(t)
+		for _, b in ipairs(WinCtl.btns) do
+			b.BackgroundColor3 = t.Background
+			b.TextColor3 = t.Font
+		end
+	end
+
+	if holder then
+		local function mk(text, xoff, cb)
+			local b = Instance.new("TextButton")
+			b.Size = UDim2.fromOffset(24, 18)
+			b.Position = UDim2.new(1, xoff, 0, 4)
+			b.BackgroundColor3 = Library.BackgroundColor
+			b.BorderSizePixel = 0
+			b.Text = text
+			b.Font = Enum.Font.Code
+			b.TextSize = 14
+			b.TextColor3 = Library.FontColor
+			b.ZIndex = 100
+			b.Parent = holder
+			track(b.MouseButton1Click:Connect(cb))
+			WinCtl.btns[#WinCtl.btns + 1] = b
+			return b
+		end
+		WinCtl.minBtn = mk("-", -56, function() WinCtl.toggle() end)
+		local armed = false
+		local xBtn
+		xBtn = mk("X", -28, function()
+			if not armed then
+				armed = true
+				xBtn.Text = "?"
+				notify("Klik X sekali lagi untuk menutup semua.", 3)
+				task.delay(3, function()
+					armed = false
+					pcall(function() xBtn.Text = "X" end)
+				end)
+				return
+			end
+			WinCtl.unload()
+		end)
+	end
+end
 
 local function doCopy(text, label)
 	if CFG.Ascii then text = ascii(text) end
 	notify(clip(text) and ("%s disalin (%d karakter)."):format(label, #text) or "setclipboard tidak didukung executor.", 3)
 end
 
-local function doSave(prefix, text, ext)
+local function doSave(prefix, text, ext, subdir)
 	if CFG.Ascii then text = ascii(text) end
-	local path, err = writeOut(prefix, text, ext)
+	local path, err = writeOut(prefix, text, ext, subdir)
 	notify(path and ("Disimpan: " .. path) or tostring(err), 6)
+	return path
 end
 
 local function packetDefText(e)
@@ -1428,6 +1969,19 @@ local function chatLua()
 	return chatToLua()
 end
 
+local function needSelected()
+	if not state.selected then notify("Pilih packet dulu di tab Viewer.", 3) return nil end
+	return state.selected
+end
+
+local function jumpView(key)
+	state.view = key
+	local m = MODE_BY_KEY[key]
+	if m and modeDD then pcall(function() modeDD:SetValue(m.label) end) end
+	state.view = key
+	showView()
+end
+
 ------------------------------------------------------------------
 -- TAB UTAMA
 ------------------------------------------------------------------
@@ -1435,7 +1989,7 @@ local GBControl = Tabs.Main:AddLeftGroupbox("Kontrol")
 local recToggle = GBControl:AddToggle("SS_Rec", {
 	Text = "Rekam Packet (pasif)",
 	Default = false,
-	Tooltip = "Scan packet, pasang listener IN dan hook OUT. Hanya merekam.",
+	Tooltip = "Scan packet, pasang listener IN, hook OUT, dan pantau RemoteEvent. Hanya merekam.",
 	Callback = function(v)
 		if v then startSpy() else stopSpy() notify("Rekam dihentikan (data tetap tersimpan).", 3) end
 	end,
@@ -1453,25 +2007,25 @@ GBControl:AddButton({
 		end)
 	end,
 })
-GBControl:AddButton({
-	Text = "Buka / Tutup Viewer",
-	Func = function()
-		if Viewer.gui.Enabled then Viewer.show(false) else showView() end
-	end,
-})
-GBControl:AddButton({
-	Text = "Sembunyikan Menu",
-	Tooltip = "Munculkan lagi lewat tombol Menu di bar kecil",
-	Func = function() pcall(function() Library:Toggle() end) end,
-})
+GBControl:AddButton({ Text = "Buka Viewer", Func = showView })
+GBControl:AddButton({ Text = "Kecilkan / Perbesar Menu", Func = function() WinCtl.toggle() end })
 GBControl:AddButton({
 	Text = "Clear Semua Data",
 	Func = function() clearAll() notify("Data packet dibersihkan.", 2) end,
-	DoubleClick = true,
 })
 statusLabel = GBControl:AddLabel("Status: belum aktif", true)
 
-local GBPick = Tabs.Main:AddRightGroupbox("Lihat Struct")
+local GBStat = Tabs.Main:AddRightGroupbox("Statistik Channel")
+statLabel = GBStat:AddLabel("Belum ada data", true)
+GBStat:AddButton({ Text = "Lihat Statistik di Viewer", Func = function() jumpView("stats") end })
+
+local GBWin = Tabs.Main:AddRightGroupbox("Jendela")
+GBWin:AddButton({ Text = "Tutup Semua (Unload)", Func = function() WinCtl.unload() end })
+
+------------------------------------------------------------------
+-- TAB VIEWER (kontrol)
+------------------------------------------------------------------
+local GBPick = Tabs.View:AddRightGroupbox("Lihat Struct")
 GBPick:AddInput("SS_Filter", {
 	Default = "",
 	Numeric = false,
@@ -1496,30 +2050,42 @@ ddPacket = GBPick:AddDropdown("SS_Packet", {
 		end
 	end,
 })
-local modeDD = GBPick:AddDropdown("SS_Mode", {
-	Values = MODES,
+modeDD = GBPick:AddDropdown("SS_Mode", {
+	Values = MODE_LABELS,
 	Default = 1,
 	Multi = false,
 	Text = "Tampilan",
 	Callback = function(v)
-		for i, name in ipairs(MODES) do
-			if name == v then state.view = i break end
-		end
+		local m = MODE_BY_LABEL[v]
+		if m then state.view = m.key end
 		state.dirty = true
 	end,
 })
-GBPick:AddButton({ Text = "Tampilkan di Viewer", Func = showView })
+GBPick:AddToggle("SS_Auto", {
+	Text = "Auto-refresh viewer",
+	Default = true,
+	Callback = function(v) state.auto = v end,
+})
+GBPick:AddButton({ Text = "Tampilkan / Refresh", Func = showView })
+GBPick:AddButton({
+	Text = "Copy Isi Viewer",
+	Func = function()
+		if Viewer.full == "" then return notify("Viewer kosong.", 2) end
+		notify(clip(Viewer.full) and "Teks disalin." or "setclipboard tidak didukung.", 2)
+	end,
+})
+GBPick:AddButton({
+	Text = "Simpan Isi Viewer",
+	Func = function()
+		if Viewer.full == "" then return notify("Viewer kosong.", 2) end
+		local path, err = writeOut(safeName(Viewer.title), Viewer.full)
+		notify(path and ("Disimpan: " .. path) or tostring(err), 6)
+	end,
+})
 
 ------------------------------------------------------------------
 -- TAB LOG
 ------------------------------------------------------------------
-local function jumpView(idx)
-	state.view = idx
-	pcall(function() modeDD:SetValue(MODES[idx]) end)
-	state.view = idx
-	showView()
-end
-
 local GBFilter = Tabs.Log:AddLeftGroupbox("Filter Log")
 GBFilter:AddDropdown("SS_LogDir", {
 	Values = { "Semua", "IN", "OUT" },
@@ -1527,6 +2093,13 @@ GBFilter:AddDropdown("SS_LogDir", {
 	Multi = false,
 	Text = "Arah (IN server ke client)",
 	Callback = function(v) logCfg.dir = v state.dirty = true end,
+})
+GBFilter:AddDropdown("SS_LogChan", {
+	Values = { "Semua", "reliable", "unreliable", "?" },
+	Default = 1,
+	Multi = false,
+	Text = "Channel",
+	Callback = function(v) logCfg.chan = v state.dirty = true end,
 })
 GBFilter:AddDropdown("SS_LogCat", {
 	Values = { "Semua", "chat", "movement", "other" },
@@ -1552,15 +2125,11 @@ GBFilter:AddSlider("SS_LogLines", {
 	Compact = false,
 	Callback = function(v) state.logLines = v state.dirty = true end,
 })
-GBFilter:AddButton({ Text = "Lihat Log Packet di Viewer", Func = function() jumpView(7) end })
-GBFilter:AddButton({ Text = "Lihat Chat Log di Viewer", Func = function() jumpView(8) end })
+GBFilter:AddButton({ Text = "Lihat Log Packet di Viewer", Func = function() jumpView("log") end })
+GBFilter:AddButton({ Text = "Lihat Chat Log di Viewer", Func = function() jumpView("chat") end })
+GBFilter:AddButton({ Text = "Lihat Live Feed di Viewer", Func = function() jumpView("feed") end })
 
 local GBRec = Tabs.Log:AddRightGroupbox("Rekaman")
-GBRec:AddToggle("SS_Auto", {
-	Text = "Auto-refresh viewer",
-	Default = true,
-	Callback = function(v) state.auto = v end,
-})
 GBRec:AddSlider("SS_MoveCap", {
 	Text = "Movement maks /detik (0 = semua)",
 	Default = CFG.MoveCap,
@@ -1582,7 +2151,7 @@ GBRec:AddSlider("SS_MaxSamples", {
 ddMute = GBRec:AddDropdown("SS_Mute", {
 	Values = { "(scan dulu)" },
 	Multi = true,
-	AllowNull = true, -- dropdown multi tanpa nilai awal: tidak ada packet yang di-mute saat start
+	AllowNull = true,
 	Text = "Mute packet spam",
 	Tooltip = "Packet yang dipilih tetap dihitung tapi tidak dicatat / dipelajari.",
 	Callback = function(v)
@@ -1599,6 +2168,12 @@ GBRec:AddToggle("SS_Ascii", {
 	Default = CFG.Ascii,
 	Callback = function(v) CFG.Ascii = v state.dirty = true end,
 })
+GBRec:AddToggle("SS_AutoScan", {
+	Text = "Auto-scan packet baru (20 detik)",
+	Default = false,
+	Tooltip = "getgc cukup berat. Nyalakan hanya jika packet baru sering didefinisikan.",
+	Callback = function(v) state.autoScan = v end,
+})
 GBRec:AddButton({
 	Text = "Hapus Log dan Chat Saja",
 	Func = function()
@@ -1608,11 +2183,10 @@ GBRec:AddButton({
 		state.dirty = true
 		notify("Log dan chat dibersihkan.", 2)
 	end,
-	DoubleClick = true,
 })
 
 ------------------------------------------------------------------
--- TAB COPY (fitur utama)
+-- TAB COPY
 ------------------------------------------------------------------
 local GBCopy = Tabs.Copy:AddLeftGroupbox("Copy ke Clipboard")
 GBCopy:AddButton({ Text = "Copy Tampilan Saat Ini", Func = function() doCopy(currentText(), "Tampilan") end })
@@ -1627,16 +2201,17 @@ GBCopy:AddButton({
 })
 GBCopy:AddButton({
 	Text = "Copy Tabel Packet (Lua)",
-	Tooltip = "Daftar semua packet: id, nama, jumlah, struct",
+	Tooltip = "Daftar semua packet: id, nama, channel, jumlah, struct",
 	Func = function() doCopy(registryLua(), "Tabel packet") end,
 })
 GBCopy:AddButton({
 	Text = "Copy Definisi ByteNet (terpilih)",
 	Func = function()
-		if not state.selected then return notify("Pilih packet dulu di tab Utama.", 3) end
-		doCopy(packetDefText(state.selected), "Definisi")
+		local e = needSelected()
+		if e then doCopy(packetDefText(e), "Definisi") end
 	end,
 })
+GBCopy:AddButton({ Text = "Copy Statistik Channel", Func = function() doCopy(channelStatsText(), "Statistik") end })
 GBCopy:AddButton({ Text = "Copy Laporan SEMUA Packet", Func = function() doCopy(allReport(), "Laporan") end })
 
 local GBSave = Tabs.Copy:AddRightGroupbox("Simpan ke File")
@@ -1644,7 +2219,7 @@ GBSave:AddButton({
 	Text = "Simpan Tampilan",
 	Func = function()
 		local text, title = currentText()
-		doSave(ascii(title or "view"):gsub("[^%w_%-]", "_"), text, "txt")
+		doSave(safeName(title), text, "txt")
 	end,
 })
 GBSave:AddButton({
@@ -1662,146 +2237,58 @@ GBSave:AddButton({
 })
 
 ------------------------------------------------------------------
--- BAR KONTROL KECIL (minimize / close tanpa shortcut)
+-- TAB FRAMEWORK
 ------------------------------------------------------------------
-local ControlBar = { btns = {} }
-do
-	local parent
-	if gethui then
-		local ok, h = pcall(gethui)
-		if ok then parent = h end
-	end
-	parent = parent or (pcall(function() return CoreGui.Name end) and CoreGui) or LocalPlayer:WaitForChild("PlayerGui")
+local GBGen = Tabs.Frame:AddLeftGroupbox("Generate")
+GBGen:AddLabel("Hasilkan modul dan dokumentasi dari packet yang sudah dikenali.", true)
+GBGen:AddButton({ Text = "Lihat Packets.lua di Viewer", Func = function() jumpView("framework") end })
+GBGen:AddButton({ Text = "Lihat Dokumentasi di Viewer", Func = function() jumpView("docs") end })
+GBGen:AddButton({
+	Text = "Lihat Template Script (terpilih)",
+	Func = function() if needSelected() then jumpView("template") end end,
+})
+GBGen:AddButton({ Text = "Copy Packets.lua (ByteNet)", Func = function() doCopy(frameworkModule(), "Packets.lua") end })
+GBGen:AddButton({ Text = "Copy Dokumentasi Markdown", Func = function() doCopy(docsMarkdown(), "Dokumentasi") end })
+GBGen:AddButton({
+	Text = "Copy Template Script (terpilih)",
+	Func = function()
+		local e = needSelected()
+		if e then doCopy(templateText(e), "Template") end
+	end,
+})
 
-	local gui = Instance.new("ScreenGui")
-	gui.Name = "StructScopeBar"
-	gui.ResetOnSpawn = false
-	gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-	gui.DisplayOrder = 1000
-	gui.Parent = parent
-	ControlBar.gui = gui
-
-	local function corner(o, r)
-		local c = Instance.new("UICorner")
-		c.CornerRadius = UDim.new(0, r or 5)
-		c.Parent = o
-	end
-
-	local frame = Instance.new("Frame")
-	frame.Size = UDim2.fromOffset(236, 26)
-	frame.Position = UDim2.new(0.5, -118, 0, 6)
-	frame.BackgroundColor3 = Color3.fromRGB(24, 28, 34)
-	frame.BorderSizePixel = 0
-	frame.Parent = gui
-	corner(frame, 6)
-	local stroke = Instance.new("UIStroke")
-	stroke.Color = Color3.fromRGB(0, 170, 160)
-	stroke.Thickness = 1
-	stroke.Parent = frame
-	local pad = Instance.new("UIPadding")
-	pad.PaddingLeft = UDim.new(0, 4)
-	pad.Parent = frame
-	local layout = Instance.new("UIListLayout")
-	layout.FillDirection = Enum.FillDirection.Horizontal
-	layout.Padding = UDim.new(0, 4)
-	layout.VerticalAlignment = Enum.VerticalAlignment.Center
-	layout.Parent = frame
-
-	local function mk(text, w, cb)
-		local b = Instance.new("TextButton")
-		b.Size = UDim2.fromOffset(w, 20)
-		b.BackgroundColor3 = Color3.fromRGB(16, 19, 24)
-		b.BorderSizePixel = 0
-		b.Text = text
-		b.Font = Enum.Font.Code
-		b.TextSize = 12
-		b.TextColor3 = Color3.fromRGB(230, 236, 240)
-		b.Parent = frame
-		corner(b, 4)
-		track(b.MouseButton1Click:Connect(cb))
-		ControlBar.btns[#ControlBar.btns + 1] = b
-		return b
-	end
-
-	local collapsed, moved = false, false
-	local grip
-	local function setCollapsed(v)
-		collapsed = v
-		for _, b in ipairs(ControlBar.btns) do
-			if b ~= grip then b.Visible = not v end
+local GBFSave = Tabs.Frame:AddRightGroupbox("Simpan")
+GBFSave:AddButton({ Text = "Simpan Packets.lua", Func = function() doSave("Packets", frameworkModule(), "lua") end })
+GBFSave:AddButton({ Text = "Simpan Dokumentasi (.md)", Func = function() doSave("DOKUMENTASI_" .. tostring(game.PlaceId), docsMarkdown(), "md") end })
+GBFSave:AddButton({
+	Text = "Simpan Template Script (terpilih)",
+	Func = function()
+		local e = needSelected()
+		if e then doSave("template_" .. safeName(e.short), templateText(e), "lua") end
+	end,
+})
+GBFSave:AddButton({
+	Text = "Export SEMUA ke satu folder",
+	Tooltip = "Packets.lua, dokumentasi, laporan, tabel packet, log, chat",
+	Func = function()
+		if #entries == 0 then return notify("Belum ada packet. Scan / rekam dulu.", 3) end
+		local sub = ("export_%s_%d"):format(tostring(game.PlaceId), os.time())
+		local files = {
+			{ "Packets", frameworkModule(), "lua" },
+			{ "DOKUMENTASI", docsMarkdown(), "md" },
+			{ "laporan", allReport(), "txt" },
+			{ "tabel_packet", registryLua(), "lua" },
+			{ "log", logToLua(Store.log, "Packet log (semua)"), "lua" },
+			{ "chat", chatToLua(), "lua" },
+		}
+		local okN = 0
+		for _, f in ipairs(files) do
+			local txt = CFG.Ascii and ascii(f[2]) or f[2]
+			if writeOut(f[1], txt, f[3], sub) then okN += 1 end
 		end
-		frame.Size = v and UDim2.fromOffset(42, 26) or UDim2.fromOffset(236, 26)
-	end
-
-	grip = mk("SS", 30, function()
-		if moved then return end
-		if collapsed then setCollapsed(false) end
-	end)
-	mk("Menu", 40, function() pcall(function() Library:Toggle() end) end)
-	mk("View", 40, function()
-		if Viewer.gui.Enabled then Viewer.show(false) else showView() end
-	end)
-	local recBtn = mk("Rec OFF", 56, function()
-		pcall(function() recToggle:SetValue(not recToggle.Value) end)
-	end)
-	mk("-", 22, function() setCollapsed(true) end)
-	local xArmed = false
-	local xBtn
-	xBtn = mk("X", 22, function()
-		if not xArmed then
-			xArmed = true
-			xBtn.Text = "?"
-			notify("Klik X sekali lagi untuk menutup semua.", 3)
-			task.delay(3, function()
-				xArmed = false
-				pcall(function() xBtn.Text = "X" end)
-			end)
-			return
-		end
-		local fn = getgenv and getgenv().__StructScopeUnload
-		if fn then fn() else pcall(function() Library:Unload() end) end
-	end)
-
-	function ControlBar.setRec(on)
-		recBtn.Text = on and "REC ON" or "Rec OFF"
-	end
-	function ControlBar.applyTheme(t)
-		frame.BackgroundColor3 = t.Main
-		stroke.Color = t.Accent
-		for _, b in ipairs(ControlBar.btns) do
-			b.BackgroundColor3 = t.Background
-			b.TextColor3 = t.Font
-		end
-	end
-
-	local dragging, dragStart, startPos = false, nil, nil
-	local function beginDrag(i)
-		if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then
-			dragging, dragStart, startPos, moved = true, i.Position, frame.Position, false
-		end
-	end
-	track(frame.InputBegan:Connect(beginDrag))
-	track(grip.InputBegan:Connect(beginDrag))
-	track(UserInputService.InputChanged:Connect(function(i)
-		if dragging and (i.UserInputType == Enum.UserInputType.MouseMovement or i.UserInputType == Enum.UserInputType.Touch) then
-			local d = i.Position - dragStart
-			if d.Magnitude > 4 then moved = true end
-			frame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X, startPos.Y.Scale, startPos.Y.Offset + d.Y)
-		end
-	end))
-	track(UserInputService.InputEnded:Connect(function(i)
-		if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then
-			dragging = false
-		end
-	end))
-end
-
-task.spawn(function()
-	while running do
-		pcall(ControlBar.setRec, state.active)
-		task.wait(0.4)
-	end
-end)
+		notify(okN > 0 and ("Export: %d file di workspace/StructScope/%s"):format(okN, sub) or "Export gagal (writefile?).", 6)
+	end,
+})
 
 ------------------------------------------------------------------
 -- TEMA
@@ -1841,7 +2328,7 @@ local function applyTheme(name)
 	pcall(function() Library.AccentColorDark = Library:GetDarkerColor(t.Accent) end)
 	pcall(function() Library:UpdateColorsUsingRegistry() end)
 	pcall(Viewer.applyTheme, t)
-	pcall(ControlBar.applyTheme, t)
+	pcall(WinCtl.applyTheme, t)
 end
 
 local GBTheme = Tabs.Theme:AddLeftGroupbox("Tema")
@@ -1852,28 +2339,13 @@ GBTheme:AddDropdown("SS_Theme", {
 	Text = "Pilih tema",
 	Callback = function(v) applyTheme(v) end,
 })
-GBTheme:AddLabel("Tema berlaku untuk menu, viewer, dan bar kecil.", true)
+GBTheme:AddLabel("Tema berlaku untuk menu dan viewer.", true)
 
 local GBMenu = Tabs.Theme:AddRightGroupbox("Menu")
-GBMenu:AddButton({
-	Text = "Tutup Semua (Unload)",
-	Func = function()
-		local fn = getgenv and getgenv().__StructScopeUnload
-		if fn then fn() else pcall(function() Library:Unload() end) end
-	end,
-	DoubleClick = true,
-})
-GBMenu:AddButton({
-	Text = "Reset Posisi Bar Kecil",
-	Func = function()
-		pcall(function()
-			ControlBar.gui:FindFirstChildOfClass("Frame").Position = UDim2.new(0.5, -118, 0, 6)
-		end)
-	end,
-})
+GBMenu:AddButton({ Text = "Tutup Semua (Unload)", Func = function() WinCtl.unload() end })
 pcall(function()
-	local lbl = GBMenu:AddLabel("Tombol keyboard (opsional)")
-	lbl:AddKeyPicker("MenuKeybind", { Default = "None", NoUI = true, Text = "Menu keybind" })
+	local lbl = GBMenu:AddLabel("Tombol buka/tutup menu")
+	lbl:AddKeyPicker("MenuKeybind", { Default = CFG.MenuKey, Mode = "Toggle", NoUI = true, Text = "Menu keybind" })
 	local opts = (getgenv and getgenv().Options) or Library.Options
 	if opts and opts.MenuKeybind then Library.ToggleKeybind = opts.MenuKeybind end
 end)
@@ -1883,41 +2355,26 @@ end)
 ------------------------------------------------------------------
 local GBInfo = Tabs.Info:AddLeftGroupbox("Cara Pakai")
 GBInfo:AddLabel(
-	"1. Nyalakan Rekam Packet (tab Utama atau tombol Rec di bar kecil).\n" ..
+	"1. Nyalakan Rekam Packet (tab Utama).\n" ..
 	"2. Lakukan aksi di game: jalan, pukul, chat, dll.\n" ..
-	"3. Tab Utama: pilih packet dan Tampilan untuk melihat struct.\n" ..
-	"4. Tab Log: filter arah / kategori, lihat log dan chat.\n" ..
-	"5. Tab Copy: copy atau simpan table log, chat, tabel packet.\n" ..
-	"6. Bar kecil: SS (geser / buka lagi), Menu, View, Rec, - (kecilkan), X (tutup, klik 2x).",
+	"3. Tab Viewer: pilih packet dan Tampilan.\n" ..
+	"4. Tab Log: filter arah / channel / kategori.\n" ..
+	"5. Tab Copy: copy atau simpan log, chat, tabel packet.\n" ..
+	"6. Tab Framework: Packets.lua, dokumentasi, template.\n" ..
+	"7. Title bar menu: - (kecilkan), X (tutup, klik 2x).",
 	true
 )
 local GBNote = Tabs.Info:AddRightGroupbox("Catatan")
 GBNote:AddLabel(
+	"Channel OUT pasti dari hook sendReliable/sendUnreliable. " ..
+	"Channel IN dibaca dari definisi packet; bila tidak ada, ditebak dari RemoteEvent (tanda ~). " ..
 	"Data yang dilihat adalah hasil decode ByteNet (table), bukan buffer mentah. " ..
-	"Declared dibaca dari definisi ByteNet (butuh getupvalues dan debug.info). " ..
-	"Observed hanya sebesar data yang pernah muncul. " ..
-	"Packet movement dibatasi per detik agar log tidak penuh. " ..
-	"Chat dicatat dari packet yang namanya mengandung kata chat/msg/say dan dari TextChatService.",
+	"Declared butuh getupvalues dan debug.info. " ..
+	"Script lain bisa memakai getgenv().StructScope (lihat Dokumentasi).",
 	true
 )
 
 applyTheme("Teal Gelap")
-
-------------------------------------------------------------------
--- VIEWER BUTTONS
-------------------------------------------------------------------
-Viewer.addButton("Copy", Color3.fromRGB(120, 90, 190), function()
-	if Viewer.full == "" then return notify("Viewer kosong.", 2) end
-	notify(clip(Viewer.full) and "Teks disalin." or "setclipboard tidak didukung.", 2)
-end)
-Viewer.addButton("Save", Color3.fromRGB(40, 140, 150), function()
-	if Viewer.full == "" then return notify("Viewer kosong.", 2) end
-	local name = ascii(Viewer.title ~= "" and Viewer.title or "view"):gsub("[^%w_%-]", "_")
-	local path, err = writeOut(name, Viewer.full)
-	notify(path and ("Disimpan: " .. path) or tostring(err), 6)
-end)
-Viewer.addButton("Refresh", Color3.fromRGB(60, 110, 200), function() showView() end)
-Viewer.addButton("Tutup", Color3.fromRGB(190, 60, 60), function() Viewer.show(false) end)
 
 ------------------------------------------------------------------
 -- UNLOAD
@@ -1927,14 +2384,16 @@ local function cleanup()
 	running = false
 	state.active = false
 	for _, e in ipairs(entries) do pcall(detach, e) end
+	disconnectRemotes()
 	for _, c in ipairs(conns) do pcall(function() c:Disconnect() end) end
-	pcall(function() Viewer.gui:Destroy() end)
-	pcall(function() ControlBar.gui:Destroy() end)
+	for _, b in ipairs(WinCtl.btns) do pcall(function() b:Destroy() end) end
 	if chatConn then pcall(function() chatConn:Disconnect() end) chatConn = nil end
+	table.clear(Subs)
 	if getgenv then
 		pcall(function()
 			getgenv().__SS_out = nil
 			getgenv().__StructScopeUnload = nil
+			getgenv().StructScope = nil
 		end)
 	end
 end
@@ -1944,6 +2403,7 @@ if getgenv then
 		cleanup()
 		pcall(function() Library:Unload() end)
 	end
+	getgenv().StructScope = API
 end
 
 ------------------------------------------------------------------
@@ -1954,7 +2414,17 @@ task.spawn(function()
 	while running do
 		local now = os.clock()
 		if state.listDirty then pcall(refreshLists) end
-		if state.auto and state.dirty and Viewer.gui.Enabled then
+		if state.autoScan and state.active and not starting and now - state.lastScan >= CFG.AutoScanEvery then
+			state.lastScan = now
+			task.spawn(function()
+				local n = scanPackets()
+				if n > 0 then
+					for _, e in ipairs(entries) do attach(e) end
+					refreshLists()
+				end
+			end)
+		end
+		if state.auto and state.dirty and Viewer.isOpen() then
 			state.dirty = false
 			pcall(function()
 				local text, title = render()
@@ -1963,11 +2433,15 @@ task.spawn(function()
 		end
 		if now - lastStatus >= 1 then
 			lastStatus = now
-			local totalIn, totalOut = 0, 0
-			for _, e in ipairs(entries) do totalIn += e.cIn totalOut += e.cOut end
+			local s = sumCounts()
 			pcall(function()
-				statusLabel:SetText(("Status: %s | packet %d | IN %d | OUT %d"):format(
-					state.active and "REKAM" or "BERHENTI", #entries, totalIn, totalOut))
+				statusLabel:SetText(("Status: %s | packet %d\nIN %d | OUT %d"):format(
+					state.active and "REKAM" or "BERHENTI", #entries,
+					s.inR + s.inU + s.inX, s.outR + s.outU + s.outX))
+			end)
+			pcall(function()
+				statLabel:SetText(("Reliable   IN %d | OUT %d\nUnreliable IN %d | OUT %d\nBelum jelas IN %d | OUT %d\nRaw byte R %d | U %d"):format(
+					s.inR, s.outR, s.inU, s.outU, s.inX, s.outX, Raw.reliable.bytes, Raw.unreliable.bytes))
 			end)
 		end
 		task.wait(0.3)
