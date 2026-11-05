@@ -1,7 +1,4 @@
 # 📚 NXroENinD_DPcKage — Master Technical Specification & Architecture Manual
-**Version:** 3.0.0-PRO  
-**Architecture Standard:** GrowLauncher / GentaHax Struct Compliant  
-**Target Engine:** Luau / ByteNet Binary Protocol (GrowBlox Engine)
 
 ---
 
