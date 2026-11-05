@@ -16,8 +16,10 @@
 
 ---
 
-#Import Awal
-```loadstring(game:HttpGet("https://raw.githubusercontent.com/Mytzcodes/Gbxzcf0x2993HsFDj1/refs/heads/main/NXroENinD_DPcKage_Loader.lua"))()```
+## Import Awal
+```
+loadstring(game:HttpGet("https://raw.githubusercontent.com/Mytzcodes/Gbxzcf0x2993HsFDj1/refs/heads/main/NXroENinD_DPcKage_Loader.lua"))()
+```
 
 ## 1. Arsitektur Memori DLL & Struct Protocol
 
