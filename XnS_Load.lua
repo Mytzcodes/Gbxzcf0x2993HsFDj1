@@ -6,7 +6,6 @@
     TAB: MISC · SPAM · AUTO FARM · TELEPORT · MODS LOG · ITEM LIST
          ROULETTE · PROFILE · TROLL · ANTI-DETECT
 ]]
-
 -- ══════════════════════════════════════════════════════════════
 --  BOOTSTRAP
 -- ══════════════════════════════════════════════════════════════
