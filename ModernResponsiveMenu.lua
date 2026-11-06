@@ -13,9 +13,9 @@
       2. Fix ZIndex & Menutupi Area TopBar/Logo Roblox:
          - Menggunakan ZIndexBehavior.Sibling dengan hierarki bersih sehingga tidak ada
            satu pun teks atau tombol yang tenggelam di belakang background.
-         - DisplayOrder = 2147483647 (Maksimum) + IgnoreGuiInset = true + ScreenInsets.None
-           + menonaktifkan CoreGui sementara saat menu fokus + Top-Left Brand Shield
-           yang menutup area pojok kiri atas (logo Roblox).
+         - DisplayOrder tinggi untuk ScreenGui di PlayerGui + IgnoreGuiInset = true
+           + ScreenInsets.None. Roblox Topbar disembunyikan secara khusus saat menu
+           fokus melalui StarterGui:SetCore("TopbarEnabled"), bukan mematikan seluruh CoreGui.
       3. Tema Monochrome Art & Deep Blue Premiere Gradient:
          - Menghilangkan warna cyberpunk mencolok; beralih ke estetika Monochrome Art
            & Deep Midnight Blue Premiere Gradient yang elegan, bersih, dan tajam.
@@ -292,11 +292,29 @@ local function attachPremiereGradient(parent: GuiObject, rotation: number): UIGr
     return grad
 end
 
--- Fungsi Menyembunyikan/Menampilkan CoreGui Roblox agar tidak menghalangi menu
+-- Mengatur Topbar Roblox saja (tanpa mematikan Chat, Backpack, PlayerList, dll.)
+-- Topbar adalah CoreGUI, sehingga DisplayOrder pada PlayerGui tidak dapat menimpanya.
 local function setRobloxCoreGuiHidden(hidden: boolean)
-    pcall(function()
-        StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.All, not hidden)
-    end)
+    local enabled = not hidden
+
+    -- SetCore kadang belum siap tepat saat LocalScript mulai berjalan.
+    -- Retry singkat agar startup / maximize tidak kehilangan perubahan status.
+    for attempt = 1, 10 do
+        local ok = pcall(function()
+            StarterGui:SetCore("TopbarEnabled", enabled)
+        end)
+
+        if ok then
+            return true
+        end
+
+        if attempt < 10 then
+            task.wait(0.1)
+        end
+    end
+
+    warn("[Dry Cursed Hub] Gagal mengubah status Roblox Topbar. SetCore belum tersedia.")
+    return false
 end
 
 -- Fungsi Dragging Universal
@@ -346,11 +364,13 @@ local function makeDraggable(handle: GuiObject, target: GuiObject, onClick: (() 
 end
 
 -- ================================================================================
--- 2. SCREEN GUI PRIORITAS MAKSIMUM (MENUTUPI AREA TOPBAR & SEMUA UI LAIN)
+-- 2. SCREEN GUI MENU
+-- DisplayOrder tinggi hanya mengatur urutan ScreenGui di PlayerGui.
+-- Roblox Topbar ditangani terpisah melalui StarterGui:SetCore("TopbarEnabled").
 -- ================================================================================
 local ScreenGui = create("ScreenGui", {
     Name = "DryCursedHubUI",
-    DisplayOrder = 2147483647, -- Nilai maksimum 32-bit agar selalu paling depan
+    DisplayOrder = 10000, -- Prioritas tinggi di antara ScreenGui milik PlayerGui
     IgnoreGuiInset = true,
     ZIndexBehavior = Enum.ZIndexBehavior.Sibling, -- Sibling memastikan semua teks selalu di depan parent-nya
     ResetOnSpawn = false,
@@ -358,6 +378,11 @@ local ScreenGui = create("ScreenGui", {
 })
 pcall(function()
     ScreenGui.ScreenInsets = Enum.ScreenInsets.None
+end)
+
+-- Pastikan Topbar tidak tertinggal dalam keadaan tersembunyi jika UI dihancurkan.
+ScreenGui.Destroying:Connect(function()
+    setRobloxCoreGuiHidden(false)
 end)
 
 local ModalBlur = create("BlurEffect", {
