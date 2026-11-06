@@ -1,22 +1,30 @@
 --[[
     ================================================================================
-    FUTURE HUAXIA // PREMIERE MOTION-GRAPHIC HUD — v5.0 (STARTUP ILLUSTRATION EDITION)
+    DRY CURSED | HUB (community) — MONOCHROME DEEP BLUE PREMIERE UI v6.0
     ================================================================================
     Penempatan   : StarterPlayer -> StarterPlayerScripts (LocalScript)
-    Fitur Utama & Pembaruan v5.0 :
-      1. Cinematic Startup Illustration & Boot Loader (Aktif Otomatis Saat Pertama Dimulai):
-         - Menampilkan ilustrasi vektor prosedural "Celestial Cyber-Astrolabe" berlapis:
-           * Cincin Orbit Luar & Dalam yang berputar berlawanan arah (Counter-Rotating Rings)
-           * Bingkai Oktagonal Berlian Huaxia (Dual 45°/0° Mecha Frames)
-           * Inti Reaktor Hologram dengan gelombang kejut (Core Pulse & Orbital Nodes)
-           * Pita Pemindai Laser (Holographic Horizon Laser Scan)
-           * Progress Bar Gradien Premiere (0% -> 100%) + Log Tahapan Booting Real-Time
-           * Tombol [SKIP INTRO ▸] & Transisi Iris Membuka HUD Utama 85% Layar.
-      2. Premiere Multi-Stop Luxury Gradients (UIGradient di dalam semua panel & kartu)
-      3. Interactive Bottom-Right Resize Handle Shape (Pojok Kanan Bawah: Tarik 55%-95%)
-      4. Procedural Motion Graphics Engine (RenderStepped: Shimmer, Scanline, Equalizer)
-      5. Index Paling Depan (DisplayOrder = 999999) + Modal Focus Blocker + Blur Kamera
-      6. Tombol Minimize Merah Interaktif + 5 Tema Warna + 4 Font + Custom Logo
+    Perbaikan & Desain v6.0 :
+      1. Pure Proportional Scaling (Bukan Crop!):
+         - Seluruh jendela menu menggunakan ukuran kanvas referensi tetap (1060 x 600)
+           yang dikendalikan 100% melalui UIScale.
+         - Saat dikecilkan/dibesarkan lewat pojok kanan bawah (atau otomatis mengikuti
+           layar HP/PC), SEMUA teks, tombol, sudut, dan kartu ikut mengecil/membesar
+           secara proporsional tanpa ada teks yang terpotong (crop).
+      2. Fix ZIndex & Menutupi Area TopBar/Logo Roblox:
+         - Menggunakan ZIndexBehavior.Sibling dengan hierarki bersih sehingga tidak ada
+           satu pun teks atau tombol yang tenggelam di belakang background.
+         - DisplayOrder = 2147483647 (Maksimum) + IgnoreGuiInset = true + ScreenInsets.None
+           + menonaktifkan CoreGui sementara saat menu fokus + Top-Left Brand Shield
+           yang menutup area pojok kiri atas (logo Roblox).
+      3. Tema Monochrome Art & Deep Blue Premiere Gradient:
+         - Menghilangkan warna cyberpunk mencolok; beralih ke estetika Monochrome Art
+           & Deep Midnight Blue Premiere Gradient yang elegan, bersih, dan tajam.
+      4. Branding Kiri Atas:
+         - Logo Monogram + Judul Utama "Dry Cursed | Hub" dan sub-judul "community".
+      5. Lightweight Motion Graphics & Illustrative Startup Loader:
+         - Animasi ringan ramah FPS: pergeseran halus gradien Premiere, ilustrasi
+           gerhana geometris monokrom (Monochrome Eclipse Art) saat pertama mulai,
+           dan transisi pegas lembut.
     ================================================================================
 ]]
 
@@ -26,156 +34,141 @@ local TweenService = game:GetService("TweenService")
 local UserInputService = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
 local Lighting = game:GetService("Lighting")
+local StarterGui = game:GetService("StarterGui")
 
 local LocalPlayer = Players.LocalPlayer
 local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
 
 -- // Bersihkan UI & Blur lama bila script dijalankan ulang
-local oldGui = PlayerGui:FindFirstChild("FutureHuaxiaHUD")
+local oldGui = PlayerGui:FindFirstChild("DryCursedHubUI")
 if oldGui then
     oldGui:Destroy()
 end
-local oldBlur = Lighting:FindFirstChild("FutureHUDModalBlur")
+local oldBlur = Lighting:FindFirstChild("DryCursedModalBlur")
 if oldBlur then
     oldBlur:Destroy()
 end
 
 -- ================================================================================
--- 1. KONFIGURASI TEMA PREMIERE GRADIENT, FONT, & LOGO
+-- 1. PALET TEMA: MONOCHROME ART & DEEP BLUE PREMIERE GRADIENT
 -- ================================================================================
 local Themes = {
-    ["Premiere Violet-Cyan"] = {
-        Name            = "Premiere Pro (Deep Violet & Cyan)",
-        MainBg          = Color3.fromRGB(12, 14, 24),
-        PanelBg         = Color3.fromRGB(18, 20, 36),
-        GradStart       = Color3.fromRGB(28, 22, 54),
-        GradMid         = Color3.fromRGB(16, 24, 42),
-        GradEnd         = Color3.fromRGB(10, 34, 46),
-        CardBg          = Color3.fromRGB(24, 28, 48),
-        CardHover       = Color3.fromRGB(34, 40, 68),
-        SelectorBg      = Color3.fromRGB(26, 38, 66),
-        SelectorHover   = Color3.fromRGB(36, 54, 92),
-        InputBg         = Color3.fromRGB(9, 11, 20),
-        Accent          = Color3.fromRGB(0, 240, 255),
-        AccentSecondary = Color3.fromRGB(168, 85, 247),
-        TextPrimary     = Color3.fromRGB(245, 250, 255),
-        TextSecondary   = Color3.fromRGB(160, 175, 205),
-        TextMuted       = Color3.fromRGB(100, 115, 145),
-        Stroke          = Color3.fromRGB(52, 65, 105),
+    ["Premiere Deep Blue"] = {
+        Name            = "Premiere Deep Blue",
+        MainBg          = Color3.fromRGB(7, 10, 17),     -- #070A11 Obsidian Navy
+        PanelBg         = Color3.fromRGB(11, 16, 28),    -- #0B101C Deep Midnight
+        GradStart       = Color3.fromRGB(16, 28, 54),    -- #101C36 Premiere Sapphire
+        GradMid         = Color3.fromRGB(10, 17, 32),    -- #0A1120 Deep Slate Blue
+        GradEnd         = Color3.fromRGB(6, 9, 16),      -- #060910 Monochrome Ink
+        CardBg          = Color3.fromRGB(14, 21, 36),    -- #0E1524 Card Surface
+        CardHover       = Color3.fromRGB(20, 30, 50),    -- #141E32 Card Hover
+        SelectorBg      = Color3.fromRGB(22, 36, 64),    -- #162440 Pill Background
+        SelectorHover   = Color3.fromRGB(30, 48, 84),    -- #1E3054 Pill Hover
+        InputBg         = Color3.fromRGB(6, 9, 15),      -- #06090F Input Well
+        Accent          = Color3.fromRGB(147, 197, 253), -- #93C5FD Crisp Ice Blue
+        AccentSecondary = Color3.fromRGB(59, 130, 246),  -- #3B82F6 Premiere Royal Blue
+        TextPrimary     = Color3.fromRGB(248, 250, 252), -- #F8FAFC Pure Alabaster
+        TextSecondary   = Color3.fromRGB(165, 180, 204), -- #A5B4CC Silver Slate
+        TextMuted       = Color3.fromRGB(100, 116, 142), -- #64748E Muted Steel
+        Stroke          = Color3.fromRGB(34, 50, 80),    -- #223250 Hairline Border
     },
-    ["Neo-Shenzhen Jade"] = {
-        Name            = "Neo-Shenzhen (Jade Cyber)",
-        MainBg          = Color3.fromRGB(10, 15, 22),
-        PanelBg         = Color3.fromRGB(15, 22, 32),
-        GradStart       = Color3.fromRGB(12, 38, 44),
-        GradMid         = Color3.fromRGB(14, 22, 34),
-        GradEnd         = Color3.fromRGB(20, 18, 38),
-        CardBg          = Color3.fromRGB(20, 30, 44),
-        CardHover       = Color3.fromRGB(28, 42, 60),
-        SelectorBg      = Color3.fromRGB(14, 44, 52),
-        SelectorHover   = Color3.fromRGB(20, 64, 74),
-        InputBg         = Color3.fromRGB(8, 12, 18),
-        Accent          = Color3.fromRGB(0, 245, 212),
-        AccentSecondary = Color3.fromRGB(56, 189, 248),
-        TextPrimary     = Color3.fromRGB(240, 253, 250),
-        TextSecondary   = Color3.fromRGB(148, 168, 184),
-        TextMuted       = Color3.fromRGB(94, 112, 130),
-        Stroke          = Color3.fromRGB(36, 62, 78),
+    ["Monochrome Obsidian"] = {
+        Name            = "Monochrome Obsidian Art",
+        MainBg          = Color3.fromRGB(9, 9, 11),      -- #09090B Pure Carbon
+        PanelBg         = Color3.fromRGB(15, 15, 18),    -- #0F0F12 Zinc Dark
+        GradStart       = Color3.fromRGB(28, 28, 34),    -- #1C1C22 Charcoal Art
+        GradMid         = Color3.fromRGB(16, 16, 20),    -- #101014 Deep Graphite
+        GradEnd         = Color3.fromRGB(8, 8, 10),      -- #08080A Pitch Black
+        CardBg          = Color3.fromRGB(20, 20, 24),    -- #141418
+        CardHover       = Color3.fromRGB(28, 28, 34),    -- #1C1C22
+        SelectorBg      = Color3.fromRGB(32, 32, 38),    -- #202026
+        SelectorHover   = Color3.fromRGB(44, 44, 52),    -- #2C2C34
+        InputBg         = Color3.fromRGB(7, 7, 9),       -- #070709
+        Accent          = Color3.fromRGB(228, 228, 231), -- #E4E4E7 Platinum White
+        AccentSecondary = Color3.fromRGB(140, 140, 152), -- #8C8C98 Silver Grey
+        TextPrimary     = Color3.fromRGB(250, 250, 250),
+        TextSecondary   = Color3.fromRGB(161, 161, 170),
+        TextMuted       = Color3.fromRGB(105, 105, 115),
+        Stroke          = Color3.fromRGB(45, 45, 54),
     },
-    ["Huaxia Dynasty Gold"] = {
-        Name            = "Huaxia Gold (Dynasty Sci-Fi)",
-        MainBg          = Color3.fromRGB(16, 13, 18),
-        PanelBg         = Color3.fromRGB(24, 19, 28),
-        GradStart       = Color3.fromRGB(46, 30, 20),
-        GradMid         = Color3.fromRGB(24, 19, 28),
-        GradEnd         = Color3.fromRGB(36, 16, 24),
-        CardBg          = Color3.fromRGB(34, 27, 38),
-        CardHover       = Color3.fromRGB(48, 38, 52),
-        SelectorBg      = Color3.fromRGB(52, 38, 18),
-        SelectorHover   = Color3.fromRGB(74, 54, 24),
-        InputBg         = Color3.fromRGB(11, 9, 14),
-        Accent          = Color3.fromRGB(255, 190, 11),
-        AccentSecondary = Color3.fromRGB(239, 68, 68),
-        TextPrimary     = Color3.fromRGB(255, 250, 240),
-        TextSecondary   = Color3.fromRGB(190, 175, 155),
-        TextMuted       = Color3.fromRGB(125, 112, 98),
-        Stroke          = Color3.fromRGB(78, 60, 34),
+    ["Abyssal Indigo"] = {
+        Name            = "Abyssal Indigo Blue",
+        MainBg          = Color3.fromRGB(8, 9, 20),
+        PanelBg         = Color3.fromRGB(13, 15, 32),
+        GradStart       = Color3.fromRGB(22, 26, 58),
+        GradMid         = Color3.fromRGB(12, 15, 34),
+        GradEnd         = Color3.fromRGB(7, 8, 18),
+        CardBg          = Color3.fromRGB(17, 20, 42),
+        CardHover       = Color3.fromRGB(24, 29, 58),
+        SelectorBg      = Color3.fromRGB(28, 34, 70),
+        SelectorHover   = Color3.fromRGB(38, 46, 92),
+        InputBg         = Color3.fromRGB(6, 7, 15),
+        Accent          = Color3.fromRGB(165, 180, 252), -- Soft Indigo Ice
+        AccentSecondary = Color3.fromRGB(99, 102, 241),
+        TextPrimary     = Color3.fromRGB(245, 247, 255),
+        TextSecondary   = Color3.fromRGB(160, 168, 205),
+        TextMuted       = Color3.fromRGB(102, 110, 145),
+        Stroke          = Color3.fromRGB(40, 48, 88),
     },
-    ["Crimson Protocol"] = {
-        Name            = "Crimson Protocol (Mecha Red)",
-        MainBg          = Color3.fromRGB(16, 10, 14),
-        PanelBg         = Color3.fromRGB(24, 14, 20),
-        GradStart       = Color3.fromRGB(48, 16, 28),
-        GradMid         = Color3.fromRGB(22, 13, 20),
-        GradEnd         = Color3.fromRGB(32, 18, 14),
-        CardBg          = Color3.fromRGB(34, 20, 28),
-        CardHover       = Color3.fromRGB(48, 28, 38),
-        SelectorBg      = Color3.fromRGB(58, 18, 30),
-        SelectorHover   = Color3.fromRGB(82, 24, 42),
-        InputBg         = Color3.fromRGB(10, 6, 9),
-        Accent          = Color3.fromRGB(255, 42, 85),
-        AccentSecondary = Color3.fromRGB(251, 146, 60),
-        TextPrimary     = Color3.fromRGB(255, 241, 242),
-        TextSecondary   = Color3.fromRGB(195, 160, 170),
-        TextMuted       = Color3.fromRGB(130, 98, 108),
-        Stroke          = Color3.fromRGB(84, 34, 48),
-    },
-    ["Aero Glass Light"] = {
-        Name            = "Aero Porcelain (Future Light)",
-        MainBg          = Color3.fromRGB(234, 240, 248),
-        PanelBg         = Color3.fromRGB(246, 249, 253),
-        GradStart       = Color3.fromRGB(224, 236, 255),
-        GradMid         = Color3.fromRGB(244, 247, 252),
-        GradEnd         = Color3.fromRGB(232, 226, 255),
-        CardBg          = Color3.fromRGB(226, 234, 244),
-        CardHover       = Color3.fromRGB(210, 222, 238),
-        SelectorBg      = Color3.fromRGB(214, 230, 255),
-        SelectorHover   = Color3.fromRGB(188, 214, 255),
-        InputBg         = Color3.fromRGB(255, 255, 255),
-        Accent          = Color3.fromRGB(37, 99, 235),
-        AccentSecondary = Color3.fromRGB(124, 58, 237),
-        TextPrimary     = Color3.fromRGB(15, 23, 42),
-        TextSecondary   = Color3.fromRGB(71, 85, 105),
-        TextMuted       = Color3.fromRGB(120, 135, 155),
-        Stroke          = Color3.fromRGB(180, 196, 218),
+    ["Arctic Silver Blue"] = {
+        Name            = "Arctic Silver (Light Mono)",
+        MainBg          = Color3.fromRGB(232, 238, 246),
+        PanelBg         = Color3.fromRGB(244, 247, 252),
+        GradStart       = Color3.fromRGB(218, 228, 244),
+        GradMid         = Color3.fromRGB(238, 243, 250),
+        GradEnd         = Color3.fromRGB(226, 234, 246),
+        CardBg          = Color3.fromRGB(224, 232, 242),
+        CardHover       = Color3.fromRGB(210, 220, 235),
+        SelectorBg      = Color3.fromRGB(205, 218, 238),
+        SelectorHover   = Color3.fromRGB(186, 204, 232),
+        InputBg         = Color3.fromRGB(252, 254, 255),
+        Accent          = Color3.fromRGB(15, 38, 74),    -- Deep Navy Ink
+        AccentSecondary = Color3.fromRGB(37, 99, 235),
+        TextPrimary     = Color3.fromRGB(12, 18, 30),
+        TextSecondary   = Color3.fromRGB(68, 82, 105),
+        TextMuted       = Color3.fromRGB(115, 128, 150),
+        Stroke          = Color3.fromRGB(178, 192, 214),
     }
 }
 
 local ThemeOrder = {
-    "Premiere Violet-Cyan",
-    "Neo-Shenzhen Jade",
-    "Huaxia Dynasty Gold",
-    "Crimson Protocol",
-    "Aero Glass Light"
+    "Premiere Deep Blue",
+    "Monochrome Obsidian",
+    "Abyssal Indigo",
+    "Arctic Silver Blue"
 }
 
 local FontPresets = {
-    { Name = "Sci-Fi Future", Bold = Enum.Font.SciFi,       Medium = Enum.Font.Jura,         Regular = Enum.Font.Jura },
-    { Name = "Modern Gotham", Bold = Enum.Font.GothamBold,  Medium = Enum.Font.GothamMedium, Regular = Enum.Font.Gotham },
-    { Name = "Tactical Code", Bold = Enum.Font.RobotoMono,  Medium = Enum.Font.Code,         Regular = Enum.Font.RobotoMono },
-    { Name = "Cyber Michroma",Bold = Enum.Font.Michroma,    Medium = Enum.Font.GothamMedium, Regular = Enum.Font.Gotham },
+    { Name = "Gotham Clean",   Bold = Enum.Font.GothamBold,      Medium = Enum.Font.GothamMedium, Regular = Enum.Font.Gotham },
+    { Name = "Builder Modern", Bold = Enum.Font.BuilderSansBold, Medium = Enum.Font.BuilderSansMedium, Regular = Enum.Font.BuilderSans },
+    { Name = "Jura Minimal",   Bold = Enum.Font.Jura,            Medium = Enum.Font.Jura,         Regular = Enum.Font.Jura },
+    { Name = "Mono Technical", Bold = Enum.Font.RobotoMono,      Medium = Enum.Font.RobotoMono,   Regular = Enum.Font.RobotoMono },
 }
 
 local FontSizePresets = {
-    { Name = "Compact (Kecil)", Scale = 0.88, CardPad = 58, PillHeight = 30, PillWidth = 152 },
-    { Name = "Standard (Ideal)",Scale = 1.00, CardPad = 66, PillHeight = 36, PillWidth = 174 },
-    { Name = "Large (Besar)",   Scale = 1.15, CardPad = 76, PillHeight = 42, PillWidth = 198 },
+    { Name = "Small (90%)",   Scale = 0.90, CardHeight = 58, PillHeight = 30, PillMinW = 136 },
+    { Name = "Normal (100%)", Scale = 1.00, CardHeight = 64, PillHeight = 34, PillMinW = 152 },
+    { Name = "Large (112%)",  Scale = 1.12, CardHeight = 72, PillHeight = 38, PillMinW = 172 },
 }
 
 local LogoPresets = {
-    { Name = "❖ Premiere Core", Glyph = "❖" },
-    { Name = "⬢ Hexa Matrix",   Glyph = "⬢" },
-    { Name = "✦ Astral Nova",   Glyph = "✦" },
-    { Name = "⚡ Cyber Pulse",   Glyph = "⚡" },
+    { Name = "◈ Dry Crest",    Glyph = "◈" },
+    { Name = "❖ Eclipse Mono", Glyph = "❖" },
+    { Name = "⬢ Hexa Art",     Glyph = "⬢" },
+    { Name = "✦ North Star",   Glyph = "✦" },
 }
 
-local MinimizeColors = {
-    BgDefault     = Color3.fromRGB(195, 22, 54),
-    BgHover       = Color3.fromRGB(255, 48, 88),
-    BgPress       = Color3.fromRGB(136, 16, 40),
-    StrokeDefault = Color3.fromRGB(255, 120, 145),
-    StrokeHover   = Color3.fromRGB(255, 235, 240),
+local MinimizeBtnColors = {
+    BgDefault     = Color3.fromRGB(175, 24, 48),  -- Deep Crimson Red
+    BgHover       = Color3.fromRGB(225, 40, 68),  -- Interactive Bright Red
+    BgPress       = Color3.fromRGB(128, 16, 36),
+    StrokeDefault = Color3.fromRGB(235, 110, 130),
+    StrokeHover   = Color3.fromRGB(255, 225, 230),
 }
+
+-- Ukuran referensi kanvas utama (di-scale secara proporsional dengan UIScale)
+local BASE_WIDTH  = 1060
+local BASE_HEIGHT = 600
 
 -- // STATE DATA
 local State = {
@@ -186,27 +179,26 @@ local State = {
     FontSizeIndex   = 2,
     LogoIndex       = 1,
     CustomLogoAsset = "",
-    LayoutMode      = "Tri-HUD",
-    CurrentTab      = "Combat",
-    WindowScaleX    = 0.85,
-    WindowScaleY    = 0.85,
-    UIScalePercent  = 100,
+    LayoutMode      = "Tri-HUD", -- "Tri-HUD" | "Dock Kiri" | "Fokus Tengah" | "Dock Kanan"
+    CurrentTab      = "General",
+    -- Faktor skala dari layar (0.85 = 85% dari layar aktif; bisa ditarik lewat pojok kanan bawah 0.50 - 1.00)
+    UserZoomFactor  = 0.85,
     MotionEnabled   = true,
     Gameplay = {
         FOV          = 80,
         SprintBoost  = true,
-        LockOnTarget = true,
-        RenderMode   = "Premiere Ultra",
-        BloomLevel   = 70,
+        SmoothCam    = true,
+        RenderMode   = "Premiere Deep",
+        ContrastLvl  = 65,
         MasterVolume = 85,
         PlayerTag    = LocalPlayer.DisplayName,
     }
 }
 
--- // REGISTRY TEMA, FONT, & MOTION GRAPHICS
+-- // REGISTRY PEMBARUAN TEMA & FONT
 local ThemeCallbacks: { (any) -> () } = {}
 local FontCallbacks: { (any, any) -> () } = {}
-local RotatingGradients: { { Grad: UIGradient, Speed: number } } = {}
+local ShimmerGradients: { UIGradient } = {}
 
 local function getTheme()
     return Themes[ThemeOrder[State.ThemeIndex]]
@@ -245,11 +237,11 @@ local function broadcastFont()
     end
 end
 
--- // TWEEN PRESETS
-local TweenFast   = TweenInfo.new(0.16, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
-local TweenSmooth = TweenInfo.new(0.32, Enum.EasingStyle.Quart, Enum.EasingDirection.Out)
-local TweenSpring = TweenInfo.new(0.42, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
-local TweenClose  = TweenInfo.new(0.24, Enum.EasingStyle.Quint, Enum.EasingDirection.In)
+-- // TWEEN PRESETS (Ringan & Responsif)
+local TweenFast   = TweenInfo.new(0.15, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+local TweenSmooth = TweenInfo.new(0.28, Enum.EasingStyle.Quart, Enum.EasingDirection.Out)
+local TweenSpring = TweenInfo.new(0.36, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
+local TweenClose  = TweenInfo.new(0.22, Enum.EasingStyle.Quint, Enum.EasingDirection.In)
 
 -- // HELPER FUNCTIONS
 local function create(className: string, properties: { [string]: any }): any
@@ -284,7 +276,7 @@ local function addPadding(parent: Instance, top: number, bottom: number, left: n
     })
 end
 
-local function attachPremierePanelGradient(parent: GuiObject, rotation: number): UIGradient
+local function attachPremiereGradient(parent: GuiObject, rotation: number): UIGradient
     local grad = create("UIGradient", {
         Rotation = rotation,
         Parent = parent
@@ -292,50 +284,22 @@ local function attachPremierePanelGradient(parent: GuiObject, rotation: number):
     registerThemeUpdater(function(theme)
         grad.Color = ColorSequence.new({
             ColorSequenceKeypoint.new(0.0, theme.GradStart),
-            ColorSequenceKeypoint.new(0.52, theme.GradMid),
+            ColorSequenceKeypoint.new(0.55, theme.GradMid),
             ColorSequenceKeypoint.new(1.0, theme.GradEnd)
         })
     end)
+    table.insert(ShimmerGradients, grad)
     return grad
 end
 
-local function attachAnimatedBorderGradient(stroke: UIStroke, speed: number): UIGradient
-    local grad = create("UIGradient", {
-        Rotation = 0,
-        Parent = stroke
-    })
-    registerThemeUpdater(function(theme)
-        grad.Color = ColorSequence.new({
-            ColorSequenceKeypoint.new(0.0, theme.Accent),
-            ColorSequenceKeypoint.new(0.5, theme.Stroke),
-            ColorSequenceKeypoint.new(1.0, theme.AccentSecondary)
-        })
-    end)
-    table.insert(RotatingGradients, { Grad = grad, Speed = speed })
-    return grad
-end
-
-local function addCyberCornerAccents(parent: GuiObject, zIndex: number)
-    local topL = create("Frame", {
-        Size = UDim2.fromOffset(18, 2),
-        Position = UDim2.fromOffset(8, 6),
-        BorderSizePixel = 0,
-        ZIndex = zIndex,
-        Parent = parent
-    })
-    local topLVert = create("Frame", {
-        Size = UDim2.fromOffset(2, 12),
-        Position = UDim2.fromOffset(8, 6),
-        BorderSizePixel = 0,
-        ZIndex = zIndex,
-        Parent = parent
-    })
-    registerThemeUpdater(function(theme)
-        topL.BackgroundColor3 = theme.Accent
-        topLVert.BackgroundColor3 = theme.Accent
+-- Fungsi Menyembunyikan/Menampilkan CoreGui Roblox agar tidak menghalangi menu
+local function setRobloxCoreGuiHidden(hidden: boolean)
+    pcall(function()
+        StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.All, not hidden)
     end)
 end
 
+-- Fungsi Dragging Universal
 local function makeDraggable(handle: GuiObject, target: GuiObject, onClick: (() -> ())?)
     local dragging = false
     local dragInput: InputObject? = nil
@@ -371,598 +335,516 @@ local function makeDraggable(handle: GuiObject, target: GuiObject, onClick: (() 
         if input == dragInput and dragging then
             local delta = input.Position - dragStart
             movedDist = delta.Magnitude
-            TweenService:Create(target, TweenInfo.new(0.06, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
-                Position = UDim2.new(
-                    startPos.X.Scale,
-                    startPos.X.Offset + delta.X,
-                    startPos.Y.Scale,
-                    startPos.Y.Offset + delta.Y
-                )
-            }):Play()
+            target.Position = UDim2.new(
+                startPos.X.Scale,
+                startPos.X.Offset + delta.X,
+                startPos.Y.Scale,
+                startPos.Y.Offset + delta.Y
+            )
         end
     end)
 end
 
 -- ================================================================================
--- 2. SCREEN GUI PRIORITAS TERTINGGI & MODAL INPUT BLOCKER
+-- 2. SCREEN GUI PRIORITAS MAKSIMUM (MENUTUPI AREA TOPBAR & SEMUA UI LAIN)
 -- ================================================================================
 local ScreenGui = create("ScreenGui", {
-    Name = "FutureHuaxiaHUD",
-    DisplayOrder = 999999,
+    Name = "DryCursedHubUI",
+    DisplayOrder = 2147483647, -- Nilai maksimum 32-bit agar selalu paling depan
     IgnoreGuiInset = true,
+    ZIndexBehavior = Enum.ZIndexBehavior.Sibling, -- Sibling memastikan semua teks selalu di depan parent-nya
     ResetOnSpawn = false,
-    ZIndexBehavior = Enum.ZIndexBehavior.Global,
     Parent = PlayerGui
 })
+pcall(function()
+    ScreenGui.ScreenInsets = Enum.ScreenInsets.None
+end)
 
 local ModalBlur = create("BlurEffect", {
-    Name = "FutureHUDModalBlur",
-    Size = 18,
+    Name = "DryCursedModalBlur",
+    Size = 16,
     Parent = Lighting
 })
 
-local GlobalUIScale = create("UIScale", {
-    Scale = 1,
-    Parent = ScreenGui
-})
-
-local function updateViewportScale()
-    local cam = workspace.CurrentCamera
-    if not cam then return end
-    local vp = cam.ViewportSize
-    local ratio = math.min(vp.X / 1440, vp.Y / 810)
-    local userMul = State.UIScalePercent / 100
-    GlobalUIScale.Scale = math.clamp(ratio * userMul, 0.62, 1.35)
-end
-
-if workspace.CurrentCamera then
-    workspace.CurrentCamera:GetPropertyChangedSignal("ViewportSize"):Connect(updateViewportScale)
-end
-updateViewportScale()
-
--- MODAL SHIELD PENAHAN INPUT DI BELAKANG MENU
+-- MODAL SHIELD PENAHAN INPUT DI BELAKANG MENU (ZIndex = 10)
 local ModalBlocker = create("TextButton", {
     Name = "ModalFocusShield",
     Size = UDim2.fromScale(1, 1),
     Position = UDim2.fromScale(0, 0),
-    BackgroundColor3 = Color3.fromRGB(4, 6, 14),
-    BackgroundTransparency = 0.35,
+    BackgroundColor3 = Color3.fromRGB(3, 5, 10),
+    BackgroundTransparency = 0.22,
     Text = "",
     AutoButtonColor = false,
     Active = true,
     Modal = true,
     Selectable = false,
-    ZIndex = 1000,
+    ZIndex = 10,
     Parent = ScreenGui
 })
 
-create("ScrollingFrame", {
-    Size = UDim2.fromScale(1, 1),
-    BackgroundTransparency = 1,
-    BorderSizePixel = 0,
-    ScrollBarThickness = 0,
-    CanvasSize = UDim2.fromScale(1, 2),
-    ScrollingEnabled = true,
-    Active = true,
-    ZIndex = 1001,
-    Parent = ModalBlocker
-})
-
--- ================================================================================
--- 3. STARTUP LOADING ILLUSTRATION SCREEN (TAMPIL SAAT SCRIPT PERTAMA DIMULAI)
--- ================================================================================
--- Desain Ilustrasi Vektor Prosedural "Celestial Cyber-Astrolabe" di Tengah Layar
-local StartupOverlay = create("Frame", {
-    Name = "StartupLoadingIllustration",
-    AnchorPoint = Vector2.new(0.5, 0.5),
-    Position = UDim2.fromScale(0.5, 0.5),
-    Size = UDim2.fromScale(0.85, 0.85),
+-- TOP-LEFT ROBLOX LOGO COVER BAR (Menutupi area pojok kiri atas layar secara elegan)
+local TopLeftCrownBar = create("Frame", {
+    Name = "TopLeftCornerShield",
+    Position = UDim2.fromOffset(10, 8),
+    Size = UDim2.fromOffset(210, 40),
     BackgroundColor3 = Color3.new(1, 1, 1),
-    ClipsDescendants = true,
-    Active = true,
-    ZIndex = 6000, -- Berada di atas seluruh panel saat loading
+    ZIndex = 150, -- Selalu di lapisan terdepan pojok kiri atas
     Parent = ScreenGui
 })
-addCorner(StartupOverlay, 16)
-attachPremierePanelGradient(StartupOverlay, 135)
-local startupStroke = addStroke(StartupOverlay, Color3.new(1, 1, 1), 2, 0.05)
-attachAnimatedBorderGradient(startupStroke, 45)
-addCyberCornerAccents(StartupOverlay, 6005)
+addCorner(TopLeftCrownBar, 10)
+attachPremiereGradient(TopLeftCrownBar, 25)
+local crownStroke = addStroke(TopLeftCrownBar, Color3.new(1, 1, 1), 1.2, 0.2)
 
-local StartupScale = create("UIScale", {
-    Scale = 1,
-    Parent = StartupOverlay
-})
-
--- Kanvas Ilustrasi Pusat (Celestial Cyber-Astrolabe Vector Illustration)
-local IllustrationArtBox = create("Frame", {
-    Name = "IllustrationVectorCanvas",
-    AnchorPoint = Vector2.new(0.5, 0.5),
-    Position = UDim2.new(0.5, 0, 0.42, 0),
-    Size = UDim2.fromOffset(230, 230),
+local CrownIcon = create("TextLabel", {
+    AnchorPoint = Vector2.new(0, 0.5),
+    Position = UDim2.new(0, 12, 0.5, 0),
+    Size = UDim2.fromOffset(22, 22),
     BackgroundTransparency = 1,
-    ZIndex = 6010,
-    Parent = StartupOverlay
+    Text = "◈",
+    ZIndex = 2,
+    Parent = TopLeftCrownBar
 })
 
--- Lapis 1: Aura Glow Gradien Radial di belakang ilustrasi
-local ArtAura = create("Frame", {
-    AnchorPoint = Vector2.new(0.5, 0.5),
-    Position = UDim2.fromScale(0.5, 0.5),
-    Size = UDim2.fromOffset(220, 220),
-    BackgroundColor3 = Color3.new(1, 1, 1),
-    BackgroundTransparency = 0.72,
-    ZIndex = 6011,
-    Parent = IllustrationArtBox
-})
-addCorner(ArtAura, 999)
-attachPremierePanelGradient(ArtAura, 45)
-
--- Lapis 2: Cincin Orbit Luar (Outer Astrolabe Ring) + 8 Titik Kompas Orbital
-local OuterOrbitRing = create("Frame", {
-    AnchorPoint = Vector2.new(0.5, 0.5),
-    Position = UDim2.fromScale(0.5, 0.5),
-    Size = UDim2.fromOffset(196, 196),
+local CrownTitle = create("TextLabel", {
+    Position = UDim2.new(0, 38, 0, 5),
+    Size = UDim2.new(1, -46, 0, 16),
     BackgroundTransparency = 1,
-    ZIndex = 6012,
-    Parent = IllustrationArtBox
+    Text = "Dry Cursed | Hub",
+    TextXAlignment = Enum.TextXAlignment.Left,
+    ZIndex = 2,
+    Parent = TopLeftCrownBar
 })
-addCorner(OuterOrbitRing, 999)
-local outerRingStroke = addStroke(OuterOrbitRing, Color3.new(1, 1, 1), 1.8, 0.25)
-attachAnimatedBorderGradient(outerRingStroke, 60)
 
-for deg = 0, 315, 45 do
-    local rad = math.rad(deg)
-    local nx = 0.5 + math.cos(rad) * 0.5
-    local ny = 0.5 + math.sin(rad) * 0.5
-    local dot = create("Frame", {
-        AnchorPoint = Vector2.new(0.5, 0.5),
-        Position = UDim2.fromScale(nx, ny),
-        Size = (deg % 90 == 0) and UDim2.fromOffset(8, 8) or UDim2.fromOffset(5, 5),
-        Rotation = 45,
-        BorderSizePixel = 0,
-        ZIndex = 6013,
-        Parent = OuterOrbitRing
-    })
-    addCorner(dot, 2)
-    registerThemeUpdater(function(theme)
-        dot.BackgroundColor3 = (deg % 90 == 0) and theme.Accent or theme.AccentSecondary
-    end)
-end
-
--- Lapis 3: Bingkai Berlian Ganda (Dual Octagonal Bagua / Cyber Rhombus)
-local DiamondFrameA = create("Frame", {
-    AnchorPoint = Vector2.new(0.5, 0.5),
-    Position = UDim2.fromScale(0.5, 0.5),
-    Size = UDim2.fromOffset(132, 132),
-    BackgroundTransparency = 0.85,
-    Rotation = 45,
-    ZIndex = 6014,
-    Parent = IllustrationArtBox
-})
-addCorner(DiamondFrameA, 14)
-local diaStrokeA = addStroke(DiamondFrameA, Color3.new(1, 1, 1), 2, 0.15)
-
-local DiamondFrameB = create("Frame", {
-    AnchorPoint = Vector2.new(0.5, 0.5),
-    Position = UDim2.fromScale(0.5, 0.5),
-    Size = UDim2.fromOffset(132, 132),
-    BackgroundTransparency = 0.88,
-    Rotation = 0,
-    ZIndex = 6014,
-    Parent = IllustrationArtBox
-})
-addCorner(DiamondFrameB, 14)
-local diaStrokeB = addStroke(DiamondFrameB, Color3.new(1, 1, 1), 1.5, 0.35)
-
--- Lapis 4: Cincin Dalam Berputar Berlawanan (Inner Chrono Ring)
-local InnerChronoRing = create("Frame", {
-    AnchorPoint = Vector2.new(0.5, 0.5),
-    Position = UDim2.fromScale(0.5, 0.5),
-    Size = UDim2.fromOffset(96, 96),
+local CrownSub = create("TextLabel", {
+    Position = UDim2.new(0, 38, 0, 21),
+    Size = UDim2.new(1, -46, 0, 13),
     BackgroundTransparency = 1,
-    ZIndex = 6015,
-    Parent = IllustrationArtBox
+    Text = "community • active",
+    TextXAlignment = Enum.TextXAlignment.Left,
+    ZIndex = 2,
+    Parent = TopLeftCrownBar
 })
-addCorner(InnerChronoRing, 999)
-local innerRingStroke = addStroke(InnerChronoRing, Color3.new(1, 1, 1), 2.2, 0.1)
-attachAnimatedBorderGradient(innerRingStroke, -90)
-
--- Palang Sumbu Horizon & Vertikal di dalam Ilustrasi
-local AxisHoriz = create("Frame", {
-    AnchorPoint = Vector2.new(0.5, 0.5),
-    Position = UDim2.fromScale(0.5, 0.5),
-    Size = UDim2.fromOffset(220, 1),
-    BackgroundTransparency = 0.6,
-    BorderSizePixel = 0,
-    ZIndex = 6012,
-    Parent = IllustrationArtBox
-})
-local AxisVert = create("Frame", {
-    AnchorPoint = Vector2.new(0.5, 0.5),
-    Position = UDim2.fromScale(0.5, 0.5),
-    Size = UDim2.fromOffset(1, 220),
-    BackgroundTransparency = 0.6,
-    BorderSizePixel = 0,
-    ZIndex = 6012,
-    Parent = IllustrationArtBox
-})
-
--- Lapis 5: Inti Emblem Pusat (Core Crest Emblem)
-local CoreEmblemPod = create("Frame", {
-    AnchorPoint = Vector2.new(0.5, 0.5),
-    Position = UDim2.fromScale(0.5, 0.5),
-    Size = UDim2.fromOffset(64, 64),
-    BackgroundColor3 = Color3.new(1, 1, 1),
-    ZIndex = 6016,
-    Parent = IllustrationArtBox
-})
-addCorner(CoreEmblemPod, 16)
-attachPremierePanelGradient(CoreEmblemPod, 45)
-local corePodStroke = addStroke(CoreEmblemPod, Color3.new(1, 1, 1), 2, 0)
-
-local CoreEmblemGlyph = create("TextLabel", {
-    Size = UDim2.fromScale(1, 1),
-    BackgroundTransparency = 1,
-    Text = "❖",
-    ZIndex = 6017,
-    Parent = CoreEmblemPod
-})
-
--- Garis Pemindai Laser Horizontal pada Ilustrasi
-local IllustrationLaserScan = create("Frame", {
-    AnchorPoint = Vector2.new(0.5, 0.5),
-    Position = UDim2.new(0.5, 0, 0.1, 0),
-    Size = UDim2.new(1.15, 0, 0, 3),
-    BorderSizePixel = 0,
-    ZIndex = 6018,
-    Parent = IllustrationArtBox
-})
-create("UIGradient", {
-    Transparency = NumberSequence.new({
-        NumberSequenceKeypoint.new(0, 1),
-        NumberSequenceKeypoint.new(0.5, 0),
-        NumberSequenceKeypoint.new(1, 1)
-    }),
-    Parent = IllustrationLaserScan
-})
-
--- Tipografi Judul & Status Tahapan Booting di Bawah Ilustrasi
-local BootTitleLabel = create("TextLabel", {
-    AnchorPoint = Vector2.new(0.5, 0),
-    Position = UDim2.new(0.5, 0, 0.71, 0),
-    Size = UDim2.new(0.8, 0, 0, 26),
-    BackgroundTransparency = 1,
-    Text = "HUAXIA // PREMIERE OS v5.0",
-    ZIndex = 6015,
-    Parent = StartupOverlay
-})
-
-local BootStageLabel = create("TextLabel", {
-    AnchorPoint = Vector2.new(0.5, 0),
-    Position = UDim2.new(0.5, 0, 0.77, 0),
-    Size = UDim2.new(0.8, 0, 0, 18),
-    BackgroundTransparency = 1,
-    Text = "[01/04] INITIALIZING CELESTIAL VECTOR ENGINE...",
-    ZIndex = 6015,
-    Parent = StartupOverlay
-})
-
--- Progress Bar Gradien Premiere + Persentase
-local BootBarTrack = create("Frame", {
-    AnchorPoint = Vector2.new(0.5, 0),
-    Position = UDim2.new(0.5, 0, 0.83, 0),
-    Size = UDim2.new(0.52, 0, 0, 10),
-    ZIndex = 6015,
-    Parent = StartupOverlay
-})
-addCorner(BootBarTrack, 99)
-local bootTrackStroke = addStroke(BootBarTrack, Color3.new(1, 1, 1), 1, 0.3)
-
-local BootBarFill = create("Frame", {
-    Size = UDim2.new(0, 0, 1, 0),
-    BackgroundColor3 = Color3.new(1, 1, 1),
-    ZIndex = 6016,
-    Parent = BootBarTrack
-})
-addCorner(BootBarFill, 99)
-local bootFillGrad = create("UIGradient", {
-    Parent = BootBarFill
-})
-
-local BootPercentLabel = create("TextLabel", {
-    AnchorPoint = Vector2.new(0.5, 0),
-    Position = UDim2.new(0.5, 0, 0.865, 0),
-    Size = UDim2.new(0.3, 0, 0, 20),
-    BackgroundTransparency = 1,
-    Text = "0%",
-    ZIndex = 6015,
-    Parent = StartupOverlay
-})
-
--- Tombol [SKIP INTRO ▸] di Pojok Kanan Bawah Layar Loading
-local SkipIntroBtn = create("TextButton", {
-    AnchorPoint = Vector2.new(1, 1),
-    Position = UDim2.new(1, -20, 1, -18),
-    Size = UDim2.fromOffset(124, 34),
-    Text = "SKIP INTRO ▸",
-    AutoButtonColor = false,
-    ZIndex = 6020,
-    Parent = StartupOverlay
-})
-addCorner(SkipIntroBtn, 8)
-local skipStroke = addStroke(SkipIntroBtn, Color3.new(1, 1, 1), 1.2, 0.2)
 
 registerThemeUpdater(function(theme)
-    DiamondFrameA.BackgroundColor3 = theme.SelectorBg
-    DiamondFrameB.BackgroundColor3 = theme.CardBg
-    diaStrokeA.Color = theme.Accent
-    diaStrokeB.Color = theme.AccentSecondary
-    AxisHoriz.BackgroundColor3 = theme.Accent
-    AxisVert.BackgroundColor3 = theme.AccentSecondary
-    corePodStroke.Color = theme.Accent
-    CoreEmblemGlyph.TextColor3 = theme.Accent
-    IllustrationLaserScan.BackgroundColor3 = theme.Accent
-    BootTitleLabel.TextColor3 = theme.TextPrimary
-    BootStageLabel.TextColor3 = theme.Accent
-    BootBarTrack.BackgroundColor3 = theme.InputBg
-    bootTrackStroke.Color = theme.Stroke
-    bootFillGrad.Color = ColorSequence.new({
-        ColorSequenceKeypoint.new(0, theme.AccentSecondary),
-        ColorSequenceKeypoint.new(1, theme.Accent)
-    })
-    BootPercentLabel.TextColor3 = theme.TextSecondary
-    SkipIntroBtn.BackgroundColor3 = theme.SelectorBg
-    SkipIntroBtn.TextColor3 = theme.Accent
-    skipStroke.Color = theme.Accent
+    crownStroke.Color = theme.Stroke
+    CrownIcon.TextColor3 = theme.Accent
+    CrownTitle.TextColor3 = theme.TextPrimary
+    CrownSub.TextColor3 = theme.TextSecondary
 end)
 
-registerFontUpdater(function(font, fSize)
-    CoreEmblemGlyph.Font = font.Bold
-    CoreEmblemGlyph.TextSize = math.round(30 * fSize.Scale)
-    BootTitleLabel.Font = font.Bold
-    BootTitleLabel.TextSize = math.round(18 * fSize.Scale)
-    BootStageLabel.Font = font.Medium
-    BootStageLabel.TextSize = math.round(12 * fSize.Scale)
-    BootPercentLabel.Font = font.Bold
-    BootPercentLabel.TextSize = math.round(13 * fSize.Scale)
-    SkipIntroBtn.Font = font.Bold
-    SkipIntroBtn.TextSize = math.round(11 * fSize.Scale)
+registerFontUpdater(function(font)
+    CrownIcon.Font = font.Bold
+    CrownIcon.TextSize = 15
+    CrownTitle.Font = font.Bold
+    CrownTitle.TextSize = 12
+    CrownSub.Font = font.Regular
+    CrownSub.TextSize = 10
 end)
 
 -- ================================================================================
--- 4. FLOATING SHORTCUT ICON (ZINDEX 5000+ DENGAN PREMIERE GRADIENT & PULSE RING)
+-- 3. FLOATING SHORTCUT ICON (SAAT MENU DI-MINIMIZE, POSISI KIRI ATAS/TENGAH)
 -- ================================================================================
-local FloatingShortcut = create("Frame", {
-    Name = "FloatingShortcutPod",
-    AnchorPoint = Vector2.new(0, 0.5),
-    Position = UDim2.new(0.018, 0, 0.5, 0),
-    Size = UDim2.fromOffset(68, 68),
+local FloatingShortcut = create("TextButton", {
+    Name = "FloatingShortcutButton",
+    AnchorPoint = Vector2.new(0, 0),
+    Position = UDim2.fromOffset(10, 8), -- Tepat di pojok kiri atas menutupi area TopBar Roblox
+    Size = UDim2.fromOffset(210, 44),
     BackgroundColor3 = Color3.new(1, 1, 1),
+    Text = "",
+    AutoButtonColor = false,
     Visible = false,
     Active = true,
-    ZIndex = 5000,
+    ZIndex = 200,
     Parent = ScreenGui
 })
-addCorner(FloatingShortcut, 16)
-attachPremierePanelGradient(FloatingShortcut, 45)
-local shortcutStroke = addStroke(FloatingShortcut, Color3.new(1, 1, 1), 2.2, 0)
-attachAnimatedBorderGradient(shortcutStroke, 65)
+addCorner(FloatingShortcut, 11)
+attachPremiereGradient(FloatingShortcut, 30)
+local shortcutStroke = addStroke(FloatingShortcut, Color3.new(1, 1, 1), 1.5, 0.1)
 
-local ShortcutPulseRing = create("Frame", {
-    AnchorPoint = Vector2.new(0.5, 0.5),
-    Position = UDim2.fromScale(0.5, 0.5),
-    Size = UDim2.fromScale(1, 1),
-    BackgroundTransparency = 1,
-    ZIndex = 4999,
-    Parent = FloatingShortcut
-})
-addCorner(ShortcutPulseRing, 18)
-local pulseRingStroke = addStroke(ShortcutPulseRing, Color3.new(1, 1, 1), 1.5, 0.3)
-
-local ShortcutLogoImage = create("ImageLabel", {
-    AnchorPoint = Vector2.new(0.5, 0.5),
-    Position = UDim2.new(0.5, 0, 0.42, 0),
-    Size = UDim2.fromOffset(30, 30),
+local ShortcutLogoImg = create("ImageLabel", {
+    AnchorPoint = Vector2.new(0, 0.5),
+    Position = UDim2.new(0, 12, 0.5, 0),
+    Size = UDim2.fromOffset(24, 24),
     BackgroundTransparency = 1,
     Image = "",
     Visible = false,
-    ZIndex = 5002,
+    ZIndex = 2,
     Parent = FloatingShortcut
 })
 
 local ShortcutGlyph = create("TextLabel", {
-    AnchorPoint = Vector2.new(0.5, 0.5),
-    Position = UDim2.new(0.5, 0, 0.40, 0),
-    Size = UDim2.new(1, 0, 0, 30),
+    AnchorPoint = Vector2.new(0, 0.5),
+    Position = UDim2.new(0, 12, 0.5, 0),
+    Size = UDim2.fromOffset(24, 24),
     BackgroundTransparency = 1,
-    Text = "❖",
-    ZIndex = 5002,
+    Text = "◈",
+    ZIndex = 2,
     Parent = FloatingShortcut
 })
 
-local ShortcutBadgeText = create("TextLabel", {
-    AnchorPoint = Vector2.new(0.5, 1),
-    Position = UDim2.new(0.5, 0, 1, -6),
-    Size = UDim2.new(1, -6, 0, 14),
+local ShortcutMainTxt = create("TextLabel", {
+    Position = UDim2.new(0, 42, 0, 6),
+    Size = UDim2.new(1, -54, 0, 17),
     BackgroundTransparency = 1,
-    Text = "OPEN HUD",
-    ZIndex = 5002,
+    Text = "Dry Cursed | Hub",
+    TextXAlignment = Enum.TextXAlignment.Left,
+    ZIndex = 2,
+    Parent = FloatingShortcut
+})
+
+local ShortcutSubTxt = create("TextLabel", {
+    Position = UDim2.new(0, 42, 0, 23),
+    Size = UDim2.new(1, -54, 0, 14),
+    BackgroundTransparency = 1,
+    Text = "community • klik buka",
+    TextXAlignment = Enum.TextXAlignment.Left,
+    ZIndex = 2,
     Parent = FloatingShortcut
 })
 
 registerThemeUpdater(function(theme)
+    shortcutStroke.Color = theme.Accent
     ShortcutGlyph.TextColor3 = theme.Accent
-    ShortcutLogoImage.ImageColor3 = theme.Accent
-    ShortcutBadgeText.TextColor3 = theme.TextPrimary
-    pulseRingStroke.Color = theme.Accent
+    ShortcutLogoImg.ImageColor3 = theme.Accent
+    ShortcutMainTxt.TextColor3 = theme.TextPrimary
+    ShortcutSubTxt.TextColor3 = theme.Accent
 end)
 
-registerFontUpdater(function(font, fSize)
+registerFontUpdater(function(font)
     ShortcutGlyph.Font = font.Bold
-    ShortcutGlyph.TextSize = math.round(24 * fSize.Scale)
-    ShortcutBadgeText.Font = font.Bold
-    ShortcutBadgeText.TextSize = math.round(9 * fSize.Scale)
+    ShortcutGlyph.TextSize = 17
+    ShortcutMainTxt.Font = font.Bold
+    ShortcutMainTxt.TextSize = 13
+    ShortcutSubTxt.Font = font.Regular
+    ShortcutSubTxt.TextSize = 10
 end)
 
 -- ================================================================================
--- 5. CONTAINER UTAMA 85% DARI LAYAR (DENGAN MOTION GRAPHICS & RESIZE GRIP)
+-- 4. STARTUP ILLUSTRATION SCREEN (MONOCHROME ECLIPSE ART SAAT PERTAMA DIMULAI)
 -- ================================================================================
-local HUDCanvas = create("Frame", {
-    Name = "HUDCanvas85Percent",
+local StartupOverlay = create("Frame", {
+    Name = "StartupIllustrationScreen",
     AnchorPoint = Vector2.new(0.5, 0.5),
     Position = UDim2.fromScale(0.5, 0.5),
-    Size = UDim2.fromScale(State.WindowScaleX, State.WindowScaleY),
-    BackgroundTransparency = 1,
-    Visible = false, -- Muncul setelah Startup Loading Illustration selesai
+    Size = UDim2.fromOffset(BASE_WIDTH, BASE_HEIGHT),
+    BackgroundColor3 = Color3.new(1, 1, 1),
+    ClipsDescendants = true,
     Active = true,
-    ZIndex = 2000,
+    ZIndex = 300,
+    Parent = ScreenGui
+})
+addCorner(StartupOverlay, 16)
+attachPremiereGradient(StartupOverlay, 135)
+local startupStroke = addStroke(StartupOverlay, Color3.new(1, 1, 1), 1.5, 0.15)
+
+local StartupUIScale = create("UIScale", {
+    Scale = 1,
+    Parent = StartupOverlay
+})
+
+-- Ilustrasi Monochrome Eclipse & Architectural Fine-Line Geometry di Tengah
+local EclipseCanvas = create("Frame", {
+    AnchorPoint = Vector2.new(0.5, 0.5),
+    Position = UDim2.new(0.5, 0, 0.42, 0),
+    Size = UDim2.fromOffset(220, 220),
+    BackgroundTransparency = 1,
+    ZIndex = 2,
+    Parent = StartupOverlay
+})
+
+-- Garis Sumbu Tipis (Fine Architectural Crosshair)
+local CrossH = create("Frame", {
+    AnchorPoint = Vector2.new(0.5, 0.5),
+    Position = UDim2.fromScale(0.5, 0.5),
+    Size = UDim2.fromOffset(320, 1),
+    BackgroundTransparency = 0.72,
+    BorderSizePixel = 0,
+    Parent = EclipseCanvas
+})
+local CrossV = create("Frame", {
+    AnchorPoint = Vector2.new(0.5, 0.5),
+    Position = UDim2.fromScale(0.5, 0.5),
+    Size = UDim2.fromOffset(1, 260),
+    BackgroundTransparency = 0.72,
+    BorderSizePixel = 0,
+    Parent = EclipseCanvas
+})
+
+-- Cincin Geometri Luar Tipis
+local OuterMonoRing = create("Frame", {
+    AnchorPoint = Vector2.new(0.5, 0.5),
+    Position = UDim2.fromScale(0.5, 0.5),
+    Size = UDim2.fromOffset(190, 190),
+    BackgroundTransparency = 1,
+    Parent = EclipseCanvas
+})
+addCorner(OuterMonoRing, 999)
+local outerMonoStroke = addStroke(OuterMonoRing, Color3.new(1, 1, 1), 1.2, 0.45)
+
+-- Bingkai Persegi Miring Tipis (Monochrome Architectural Square)
+local ArchSquare = create("Frame", {
+    AnchorPoint = Vector2.new(0.5, 0.5),
+    Position = UDim2.fromScale(0.5, 0.5),
+    Size = UDim2.fromOffset(134, 134),
+    BackgroundTransparency = 1,
+    Rotation = 45,
+    Parent = EclipseCanvas
+})
+addCorner(ArchSquare, 8)
+local archSquareStroke = addStroke(ArchSquare, Color3.new(1, 1, 1), 1.2, 0.35)
+
+-- Lingkaran Gerhana Utama (Deep Blue Premiere Eclipse Sphere)
+local EclipseSphere = create("Frame", {
+    AnchorPoint = Vector2.new(0.5, 0.5),
+    Position = UDim2.fromScale(0.5, 0.5),
+    Size = UDim2.fromOffset(96, 96),
+    BackgroundColor3 = Color3.new(1, 1, 1),
+    Parent = EclipseCanvas
+})
+addCorner(EclipseSphere, 999)
+attachPremiereGradient(EclipseSphere, 45)
+local eclipseStroke = addStroke(EclipseSphere, Color3.new(1, 1, 1), 1.8, 0.1)
+
+local EclipseCenterGlyph = create("TextLabel", {
+    Size = UDim2.fromScale(1, 1),
+    BackgroundTransparency = 1,
+    Text = "◈",
+    ZIndex = 3,
+    Parent = EclipseSphere
+})
+
+-- Judul Brand pada Layar Loading
+local IntroBrandTitle = create("TextLabel", {
+    AnchorPoint = Vector2.new(0.5, 0),
+    Position = UDim2.new(0.5, 0, 0.68, 0),
+    Size = UDim2.fromOffset(420, 28),
+    BackgroundTransparency = 1,
+    Text = "Dry Cursed | Hub",
+    ZIndex = 3,
+    Parent = StartupOverlay
+})
+
+local IntroBrandSub = create("TextLabel", {
+    AnchorPoint = Vector2.new(0.5, 0),
+    Position = UDim2.new(0.5, 0, 0.73, 0),
+    Size = UDim2.fromOffset(420, 18),
+    BackgroundTransparency = 1,
+    Text = "community • monochrome premiere interface",
+    ZIndex = 3,
+    Parent = StartupOverlay
+})
+
+-- Progress Bar Minimalis
+local IntroBarBg = create("Frame", {
+    AnchorPoint = Vector2.new(0.5, 0),
+    Position = UDim2.new(0.5, 0, 0.81, 0),
+    Size = UDim2.fromOffset(360, 4),
+    BorderSizePixel = 0,
+    ZIndex = 3,
+    Parent = StartupOverlay
+})
+addCorner(IntroBarBg, 99)
+
+local IntroBarFill = create("Frame", {
+    Size = UDim2.fromScale(0, 1),
+    BorderSizePixel = 0,
+    ZIndex = 4,
+    Parent = IntroBarBg
+})
+addCorner(IntroBarFill, 99)
+
+local IntroStatusText = create("TextLabel", {
+    AnchorPoint = Vector2.new(0.5, 0),
+    Position = UDim2.new(0.5, 0, 0.84, 0),
+    Size = UDim2.fromOffset(360, 18),
+    BackgroundTransparency = 1,
+    Text = "Preparing workspace... 0%",
+    ZIndex = 3,
+    Parent = StartupOverlay
+})
+
+local SkipIntroBtn = create("TextButton", {
+    AnchorPoint = Vector2.new(1, 1),
+    Position = UDim2.new(1, -24, 1, -20),
+    Size = UDim2.fromOffset(110, 32),
+    Text = "Skip Intro ▸",
+    AutoButtonColor = false,
+    ZIndex = 5,
+    Parent = StartupOverlay
+})
+addCorner(SkipIntroBtn, 8)
+local skipBtnStroke = addStroke(SkipIntroBtn, Color3.new(1, 1, 1), 1, 0.25)
+
+registerThemeUpdater(function(theme)
+    startupStroke.Color = theme.Stroke
+    CrossH.BackgroundColor3 = theme.Stroke
+    CrossV.BackgroundColor3 = theme.Stroke
+    outerMonoStroke.Color = theme.Accent
+    archSquareStroke.Color = theme.AccentSecondary
+    eclipseStroke.Color = theme.Accent
+    EclipseCenterGlyph.TextColor3 = theme.TextPrimary
+    IntroBrandTitle.TextColor3 = theme.TextPrimary
+    IntroBrandSub.TextColor3 = theme.TextSecondary
+    IntroBarBg.BackgroundColor3 = theme.InputBg
+    IntroBarFill.BackgroundColor3 = theme.Accent
+    IntroStatusText.TextColor3 = theme.TextMuted
+    SkipIntroBtn.BackgroundColor3 = theme.SelectorBg
+    SkipIntroBtn.TextColor3 = theme.TextPrimary
+    skipBtnStroke.Color = theme.Stroke
+end)
+
+registerFontUpdater(function(font)
+    EclipseCenterGlyph.Font = font.Bold
+    EclipseCenterGlyph.TextSize = 32
+    IntroBrandTitle.Font = font.Bold
+    IntroBrandTitle.TextSize = 22
+    IntroBrandSub.Font = font.Regular
+    IntroBrandSub.TextSize = 13
+    IntroStatusText.Font = font.Medium
+    IntroStatusText.TextSize = 11
+    SkipIntroBtn.Font = font.Medium
+    SkipIntroBtn.TextSize = 12
+end)
+
+-- ================================================================================
+-- 5. CONTAINER UTAMA PROPORSIONAL (UISCALE MENJAGA TEKS & TOMBOL IKUT MENGECIL)
+-- ================================================================================
+local HUDCanvas = create("Frame", {
+    Name = "HUDCanvasProportional",
+    AnchorPoint = Vector2.new(0.5, 0.5),
+    Position = UDim2.fromScale(0.5, 0.52),
+    Size = UDim2.fromOffset(BASE_WIDTH, BASE_HEIGHT), -- Kanvas referensi tetap agar TIDAK PERNAH CROP
+    BackgroundTransparency = 1,
+    Visible = false,
+    Active = true,
+    ZIndex = 50,
     Parent = ScreenGui
 })
 
-local HUDAnimScale = create("UIScale", {
+-- UIScale Utama yang mengecilkan/membesarkan SELURUH teks, kartu, dan tombol secara proporsional
+local ProportionalUIScale = create("UIScale", {
     Scale = 1,
     Parent = HUDCanvas
 })
 
+local ResizeHintLabel: TextLabel? = nil
+local HeaderScaleBadge: TextLabel? = nil
+
+local function computeAndApplyProportionalScale()
+    local cam = workspace.CurrentCamera
+    if not cam then return end
+    local vp = cam.ViewportSize
+    -- Skala dasar agar BASE_WIDTH x BASE_HEIGHT tepat memenuhi UserZoomFactor (default 85%) dari layar
+    local fitScaleX = (vp.X * State.UserZoomFactor) / BASE_WIDTH
+    local fitScaleY = (vp.Y * State.UserZoomFactor) / BASE_HEIGHT
+    local finalScale = math.clamp(math.min(fitScaleX, fitScaleY), 0.38, 1.45)
+
+    ProportionalUIScale.Scale = finalScale
+    StartupUIScale.Scale = finalScale
+
+    local pct = math.round(State.UserZoomFactor * 100)
+    if ResizeHintLabel then
+        ResizeHintLabel.Text = string.format("⇲ Scale %d%%", pct)
+    end
+    if HeaderScaleBadge then
+        HeaderScaleBadge.Text = string.format("%d%% View", pct)
+    end
+end
+
+if workspace.CurrentCamera then
+    workspace.CurrentCamera:GetPropertyChangedSignal("ViewportSize"):Connect(computeAndApplyProportionalScale)
+end
+computeAndApplyProportionalScale()
+
 -- ================================================================================
--- 6. TOP COMMAND BAR (DENGAN PREMIERE GRADIENT, MOTION EQUALIZER, & RED MINIMIZE)
+-- 6. TOP BAR MENU (KIRI ATAS: LOGO + "Dry Cursed | Hub" + "community")
 -- ================================================================================
-local TopCommandBar = create("Frame", {
-    Name = "TopCommandBar",
-    Size = UDim2.new(1, 0, 0.105, -6),
-    Position = UDim2.fromScale(0, 0),
+local TopBar = create("Frame", {
+    Name = "TopBar",
+    Size = UDim2.fromOffset(BASE_WIDTH, 62),
+    Position = UDim2.fromOffset(0, 0),
     BackgroundColor3 = Color3.new(1, 1, 1),
-    ClipsDescendants = true,
     Active = true,
-    ZIndex = 2100,
+    ZIndex = 2,
     Parent = HUDCanvas
 })
-addCorner(TopCommandBar, 12)
-attachPremierePanelGradient(TopCommandBar, 15)
-local topBarStroke = addStroke(TopCommandBar, Color3.new(1, 1, 1), 1.6, 0.1)
-attachAnimatedBorderGradient(topBarStroke, 25)
-addCyberCornerAccents(TopCommandBar, 2105)
+addCorner(TopBar, 14)
+attachPremiereGradient(TopBar, 18)
+local topBarStroke = addStroke(TopBar, Color3.new(1, 1, 1), 1.2, 0.15)
 
-local TopShimmerBar = create("Frame", {
-    Size = UDim2.new(0.35, 0, 0, 2),
-    Position = UDim2.new(0, 0, 0, 0),
-    BorderSizePixel = 0,
-    ZIndex = 2106,
-    Parent = TopCommandBar
-})
-create("UIGradient", {
-    Transparency = NumberSequence.new({
-        NumberSequenceKeypoint.new(0, 1),
-        NumberSequenceKeypoint.new(0.5, 0),
-        NumberSequenceKeypoint.new(1, 1)
-    }),
-    Parent = TopShimmerBar
-})
-
-local LogoPod = create("Frame", {
+-- KIRI ATAS: POD LOGO + JUDUL "Dry Cursed | Hub" & SUB-JUDUL "community"
+local BrandLogoPod = create("Frame", {
     AnchorPoint = Vector2.new(0, 0.5),
-    Position = UDim2.new(0, 14, 0.5, 0),
-    Size = UDim2.fromOffset(42, 42),
+    Position = UDim2.new(0, 16, 0.5, 0),
+    Size = UDim2.fromOffset(40, 40),
     BackgroundColor3 = Color3.new(1, 1, 1),
-    ZIndex = 2102,
-    Parent = TopCommandBar
+    ZIndex = 3,
+    Parent = TopBar
 })
-addCorner(LogoPod, 10)
-attachPremierePanelGradient(LogoPod, 135)
-local logoPodStroke = addStroke(LogoPod, Color3.new(1, 1, 1), 1.5, 0.15)
-attachAnimatedBorderGradient(logoPodStroke, 55)
+addCorner(BrandLogoPod, 10)
+attachPremiereGradient(BrandLogoPod, 135)
+local brandPodStroke = addStroke(BrandLogoPod, Color3.new(1, 1, 1), 1.2, 0.2)
 
 local HeaderLogoGlyph = create("TextLabel", {
     Size = UDim2.fromScale(1, 1),
     BackgroundTransparency = 1,
-    Text = "❖",
-    ZIndex = 2103,
-    Parent = LogoPod
+    Text = "◈",
+    ZIndex = 4,
+    Parent = BrandLogoPod
 })
 
 local HeaderLogoImage = create("ImageLabel", {
     AnchorPoint = Vector2.new(0.5, 0.5),
     Position = UDim2.fromScale(0.5, 0.5),
-    Size = UDim2.fromOffset(28, 28),
+    Size = UDim2.fromOffset(26, 26),
     BackgroundTransparency = 1,
     Image = "",
     Visible = false,
-    ZIndex = 2103,
-    Parent = LogoPod
+    ZIndex = 4,
+    Parent = BrandLogoPod
 })
 
-local HeaderTitle = create("TextLabel", {
-    Position = UDim2.new(0, 64, 0.15, 0),
-    Size = UDim2.new(0.22, 0, 0.40, 0),
+local MainBrandTitle = create("TextLabel", {
+    Position = UDim2.fromOffset(68, 11),
+    Size = UDim2.fromOffset(220, 22),
     BackgroundTransparency = 1,
-    Text = "HUAXIA // PREMIERE HUD",
+    Text = "Dry Cursed | Hub",
     TextXAlignment = Enum.TextXAlignment.Left,
-    ZIndex = 2102,
-    Parent = TopCommandBar
+    ZIndex = 3,
+    Parent = TopBar
 })
 
-local HeaderSubTitle = create("TextLabel", {
-    Position = UDim2.new(0, 64, 0.55, 0),
-    Size = UDim2.new(0.22, 0, 0.30, 0),
+local SubBrandCommunity = create("TextLabel", {
+    Position = UDim2.fromOffset(68, 33),
+    Size = UDim2.fromOffset(220, 16),
     BackgroundTransparency = 1,
-    Text = "SCALE: 85%x85% • MOTION ON",
+    Text = "community",
     TextXAlignment = Enum.TextXAlignment.Left,
-    ZIndex = 2102,
-    Parent = TopCommandBar
+    ZIndex = 3,
+    Parent = TopBar
 })
 
-local EqualizerPod = create("Frame", {
-    AnchorPoint = Vector2.new(0, 0.5),
-    Position = UDim2.new(0.26, 0, 0.5, 0),
-    Size = UDim2.fromOffset(44, 26),
-    BackgroundTransparency = 1,
-    ZIndex = 2103,
-    Parent = TopCommandBar
-})
-create("UIListLayout", {
-    FillDirection = Enum.FillDirection.Horizontal,
-    HorizontalAlignment = Enum.HorizontalAlignment.Center,
-    VerticalAlignment = Enum.VerticalAlignment.Bottom,
-    Padding = UDim.new(0, 3),
-    Parent = EqualizerPod
-})
-
-local EqBars: { Frame } = {}
-for i = 1, 6 do
-    local bar = create("Frame", {
-        LayoutOrder = i,
-        Size = UDim2.fromOffset(4, 12),
-        BorderSizePixel = 0,
-        ZIndex = 2104,
-        Parent = EqualizerPod
-    })
-    addCorner(bar, 99)
-    table.insert(EqBars, bar)
-    registerThemeUpdater(function(theme)
-        bar.BackgroundColor3 = (i % 2 == 0) and theme.Accent or theme.AccentSecondary
-    end)
-end
-
-local DockSwitchBar = create("Frame", {
+-- TENGAH TOPBAR: PEMILIH POSISI LAYOUT (Tri-HUD | Dock Kiri | Fokus Tengah | Dock Kanan)
+local DockSwitchContainer = create("Frame", {
     AnchorPoint = Vector2.new(0.5, 0.5),
-    Position = UDim2.new(0.50, 0, 0.5, 0),
-    Size = UDim2.fromOffset(316, 36),
-    ZIndex = 2102,
-    Parent = TopCommandBar
+    Position = UDim2.new(0.49, 0, 0.5, 0),
+    Size = UDim2.fromOffset(348, 36),
+    ZIndex = 3,
+    Parent = TopBar
 })
-addCorner(DockSwitchBar, 9)
-local dockBarStroke = addStroke(DockSwitchBar, Color3.new(1, 1, 1), 1, 0.25)
+addCorner(DockSwitchContainer, 9)
+local dockContainerStroke = addStroke(DockSwitchContainer, Color3.new(1, 1, 1), 1, 0.3)
 
-local TopSearchFrame = create("Frame", {
+-- KANAN TENGAH: KOTAK PENCARIAN KARTU
+local SearchBoxFrame = create("Frame", {
     AnchorPoint = Vector2.new(1, 0.5),
-    Position = UDim2.new(1, -136, 0.5, 0),
-    Size = UDim2.fromOffset(168, 36),
-    ZIndex = 2102,
-    Parent = TopCommandBar
+    Position = UDim2.new(1, -138, 0.5, 0),
+    Size = UDim2.fromOffset(180, 36),
+    ZIndex = 3,
+    Parent = TopBar
 })
-addCorner(TopSearchFrame, 9)
-local searchStroke = addStroke(TopSearchFrame, Color3.new(1, 1, 1), 1, 0.25)
+addCorner(SearchBoxFrame, 9)
+local searchBoxStroke = addStroke(SearchBoxFrame, Color3.new(1, 1, 1), 1, 0.3)
 
 local SearchInput = create("TextBox", {
     AnchorPoint = Vector2.new(0.5, 0.5),
@@ -970,95 +852,88 @@ local SearchInput = create("TextBox", {
     Size = UDim2.new(1, -20, 1, -6),
     BackgroundTransparency = 1,
     Text = "",
-    PlaceholderText = "⌕ Filter kartu...",
+    PlaceholderText = "⌕ Cari fitur...",
     TextXAlignment = Enum.TextXAlignment.Left,
     ClearTextOnFocus = false,
-    ZIndex = 2103,
-    Parent = TopSearchFrame
+    ZIndex = 4,
+    Parent = SearchBoxFrame
 })
 
+-- KANAN ATAS: TOMBOL MINIMIZE MERAH INTERAKTIF (DENGAN HOVER)
 local MinimizeRedBtn = create("TextButton", {
-    Name = "InteractiveRedMinimizeBtn",
+    Name = "MinimizeRedButton",
     AnchorPoint = Vector2.new(1, 0.5),
-    Position = UDim2.new(1, -14, 0.5, 0),
-    Size = UDim2.fromOffset(112, 36),
-    BackgroundColor3 = MinimizeColors.BgDefault,
-    Text = "— MINIMIZE",
+    Position = UDim2.new(1, -16, 0.5, 0),
+    Size = UDim2.fromOffset(110, 36),
+    BackgroundColor3 = MinimizeBtnColors.BgDefault,
+    Text = "— Minimize",
     TextColor3 = Color3.fromRGB(255, 255, 255),
     AutoButtonColor = false,
-    ZIndex = 2105,
-    Parent = TopCommandBar
+    ZIndex = 4,
+    Parent = TopBar
 })
 addCorner(MinimizeRedBtn, 9)
-local minRedStroke = addStroke(MinimizeRedBtn, MinimizeColors.StrokeDefault, 1.5, 0.1)
-
-create("UIGradient", {
-    Color = ColorSequence.new({
-        ColorSequenceKeypoint.new(0, Color3.fromRGB(255, 255, 255)),
-        ColorSequenceKeypoint.new(1, Color3.fromRGB(195, 180, 190))
-    }),
-    Rotation = 90,
-    Parent = MinimizeRedBtn
-})
+local minRedStroke = addStroke(MinimizeRedBtn, MinimizeBtnColors.StrokeDefault, 1.2, 0.15)
 
 MinimizeRedBtn.MouseEnter:Connect(function()
     TweenService:Create(MinimizeRedBtn, TweenFast, {
-        BackgroundColor3 = MinimizeColors.BgHover,
-        Size = UDim2.fromOffset(116, 38),
-        Text = "▼ HIDE HUD"
+        BackgroundColor3 = MinimizeBtnColors.BgHover,
+        Size = UDim2.fromOffset(114, 38),
+        Text = "▼ Hide Menu"
     }):Play()
     TweenService:Create(minRedStroke, TweenFast, {
-        Color = MinimizeColors.StrokeHover,
-        Thickness = 2.2,
+        Color = MinimizeBtnColors.StrokeHover,
+        Thickness = 1.8,
         Transparency = 0
     }):Play()
 end)
 
 MinimizeRedBtn.MouseLeave:Connect(function()
     TweenService:Create(MinimizeRedBtn, TweenFast, {
-        BackgroundColor3 = MinimizeColors.BgDefault,
-        Size = UDim2.fromOffset(112, 36),
-        Text = "— MINIMIZE"
+        BackgroundColor3 = MinimizeBtnColors.BgDefault,
+        Size = UDim2.fromOffset(110, 36),
+        Text = "— Minimize"
     }):Play()
     TweenService:Create(minRedStroke, TweenFast, {
-        Color = MinimizeColors.StrokeDefault,
-        Thickness = 1.5,
-        Transparency = 0.1
+        Color = MinimizeBtnColors.StrokeDefault,
+        Thickness = 1.2,
+        Transparency = 0.15
     }):Play()
 end)
 
 MinimizeRedBtn.MouseButton1Down:Connect(function()
     TweenService:Create(MinimizeRedBtn, TweenInfo.new(0.08), {
-        BackgroundColor3 = MinimizeColors.BgPress,
-        Size = UDim2.fromOffset(108, 34)
+        BackgroundColor3 = MinimizeBtnColors.BgPress,
+        Size = UDim2.fromOffset(106, 34)
     }):Play()
 end)
 
 registerThemeUpdater(function(theme)
-    TopShimmerBar.BackgroundColor3 = theme.Accent
+    topBarStroke.Color = theme.Stroke
+    brandPodStroke.Color = theme.Accent
     HeaderLogoGlyph.TextColor3 = theme.Accent
     HeaderLogoImage.ImageColor3 = theme.Accent
-    HeaderTitle.TextColor3 = theme.TextPrimary
-    HeaderSubTitle.TextColor3 = theme.Accent
-    DockSwitchBar.BackgroundColor3 = theme.InputBg
-    dockBarStroke.Color = theme.Stroke
-    TopSearchFrame.BackgroundColor3 = theme.InputBg
-    searchStroke.Color = theme.Stroke
+    MainBrandTitle.TextColor3 = theme.TextPrimary
+    SubBrandCommunity.TextColor3 = theme.Accent
+    DockSwitchContainer.BackgroundColor3 = theme.InputBg
+    dockContainerStroke.Color = theme.Stroke
+    SearchBoxFrame.BackgroundColor3 = theme.InputBg
+    searchBoxStroke.Color = theme.Stroke
     SearchInput.TextColor3 = theme.TextPrimary
     SearchInput.PlaceholderColor3 = theme.TextMuted
 end)
 
 registerFontUpdater(function(font, fSize)
     HeaderLogoGlyph.Font = font.Bold
-    HeaderLogoGlyph.TextSize = math.round(20 * fSize.Scale)
-    HeaderTitle.Font = font.Bold
-    HeaderTitle.TextSize = math.round(14 * fSize.Scale)
-    HeaderSubTitle.Font = font.Medium
-    HeaderSubTitle.TextSize = math.round(10 * fSize.Scale)
+    HeaderLogoGlyph.TextSize = math.round(19 * fSize.Scale)
+    MainBrandTitle.Font = font.Bold
+    MainBrandTitle.TextSize = math.round(16 * fSize.Scale)
+    SubBrandCommunity.Font = font.Medium
+    SubBrandCommunity.TextSize = math.round(12 * fSize.Scale)
     SearchInput.Font = font.Regular
     SearchInput.TextSize = math.round(12 * fSize.Scale)
     MinimizeRedBtn.Font = font.Bold
-    MinimizeRedBtn.TextSize = math.round(11 * fSize.Scale)
+    MinimizeRedBtn.TextSize = math.round(12 * fSize.Scale)
 end)
 
 local function updateLogoVisuals()
@@ -1067,121 +942,63 @@ local function updateLogoVisuals()
         HeaderLogoGlyph.Visible = false
         ShortcutGlyph.Visible = false
         HeaderLogoImage.Visible = true
-        ShortcutLogoImage.Visible = true
+        ShortcutLogoImg.Visible = true
         HeaderLogoImage.Image = State.CustomLogoAsset
-        ShortcutLogoImage.Image = State.CustomLogoAsset
+        ShortcutLogoImg.Image = State.CustomLogoAsset
     else
         HeaderLogoImage.Visible = false
-        ShortcutLogoImage.Visible = false
+        ShortcutLogoImg.Visible = false
         HeaderLogoGlyph.Visible = true
         ShortcutGlyph.Visible = true
         HeaderLogoGlyph.Text = preset.Glyph
         ShortcutGlyph.Text = preset.Glyph
-        CoreEmblemGlyph.Text = preset.Glyph
+        CrownIcon.Text = preset.Glyph
+        EclipseCenterGlyph.Text = preset.Glyph
     end
 end
 
 -- ================================================================================
--- 7. BODY WORKSPACE (3 PANEL DENGAN PREMIERE INTERIOR GRADIENT & MOTION SCANLINE)
+-- 7. BODY WORKSPACE (3 ZONA RESPONSIF DALAM KANVAS 1060 x 526)
 -- ================================================================================
-local WorkspaceZone = create("Frame", {
-    Name = "WorkspaceZone",
-    Position = UDim2.new(0, 0, 0.115, 0),
-    Size = UDim2.new(1, 0, 0.885, 0),
+local BodyArea = create("Frame", {
+    Name = "BodyArea",
+    Position = UDim2.fromOffset(0, 72),
+    Size = UDim2.fromOffset(BASE_WIDTH, BASE_HEIGHT - 72),
     BackgroundTransparency = 1,
-    ZIndex = 2050,
+    ZIndex = 2,
     Parent = HUDCanvas
 })
 
-local MotionScanlines: { Frame } = {}
-local MotionNodes: { { Node: Frame, BaseX: number, BaseY: number, Phase: number, Speed: number } } = {}
-
-local function attachInteriorMotionGraphics(panel: GuiObject, nodeCount: number)
-    local scanline = create("Frame", {
-        Size = UDim2.new(1, 0, 0, 36),
-        Position = UDim2.new(0, 0, -0.2, 0),
-        BackgroundTransparency = 0.88,
-        BorderSizePixel = 0,
-        ZIndex = 2101,
-        Parent = panel
-    })
-    create("UIGradient", {
-        Rotation = 90,
-        Transparency = NumberSequence.new({
-            NumberSequenceKeypoint.new(0, 1),
-            NumberSequenceKeypoint.new(0.5, 0.65),
-            NumberSequenceKeypoint.new(1, 1)
-        }),
-        Parent = scanline
-    })
-    table.insert(MotionScanlines, scanline)
-
-    for i = 1, nodeCount do
-        local bx = (i / (nodeCount + 1))
-        local by = ((i * 0.37) % 0.8) + 0.1
-        local sz = (i % 2 == 0) and 6 or 10
-        local node = create("Frame", {
-            AnchorPoint = Vector2.new(0.5, 0.5),
-            Position = UDim2.fromScale(bx, by),
-            Size = UDim2.fromOffset(sz, sz),
-            BackgroundTransparency = 0.82,
-            Rotation = 45,
-            BorderSizePixel = 0,
-            ZIndex = 2101,
-            Parent = panel
-        })
-        addCorner(node, 2)
-        table.insert(MotionNodes, {
-            Node = node,
-            BaseX = bx,
-            BaseY = by,
-            Phase = i * 1.4,
-            Speed = 0.8 + (i * 0.25)
-        })
-        registerThemeUpdater(function(theme)
-            node.BackgroundColor3 = (i % 2 == 0) and theme.Accent or theme.AccentSecondary
-        end)
-    end
-
-    registerThemeUpdater(function(theme)
-        scanline.BackgroundColor3 = theme.Accent
-    end)
-end
-
--- [PANEL 1: SIDE NAVIGATION DOCK]
-local SideNavPanel = create("Frame", {
-    Name = "SideNavPanel",
-    Position = UDim2.fromScale(0, 0),
-    Size = UDim2.new(0.21, -8, 1, 0),
+-- [PANEL KIRI: SIDE MENU NAVIGATION]
+local SideMenuPanel = create("Frame", {
+    Name = "SideMenuPanel",
+    Position = UDim2.fromOffset(0, 0),
+    Size = UDim2.fromOffset(220, BASE_HEIGHT - 72),
     BackgroundColor3 = Color3.new(1, 1, 1),
-    ClipsDescendants = true,
     Active = true,
-    ZIndex = 2100,
-    Parent = WorkspaceZone
+    ZIndex = 2,
+    Parent = BodyArea
 })
-addCorner(SideNavPanel, 12)
-attachPremierePanelGradient(SideNavPanel, 125)
-local sideNavStroke = addStroke(SideNavPanel, Color3.new(1, 1, 1), 1.5, 0.15)
-attachAnimatedBorderGradient(sideNavStroke, 32)
-addCyberCornerAccents(SideNavPanel, 2105)
-attachInteriorMotionGraphics(SideNavPanel, 4)
+addCorner(SideMenuPanel, 14)
+attachPremiereGradient(SideMenuPanel, 140)
+local sideStroke = addStroke(SideMenuPanel, Color3.new(1, 1, 1), 1.2, 0.15)
 
-local SideNavTitle = create("TextLabel", {
-    Position = UDim2.new(0, 16, 0, 14),
-    Size = UDim2.new(1, -32, 0, 18),
+local SideSectionTitle = create("TextLabel", {
+    Position = UDim2.fromOffset(18, 16),
+    Size = UDim2.fromOffset(184, 16),
     BackgroundTransparency = 1,
-    Text = "NAVIGATION MATRIX",
+    Text = "CATEGORIES",
     TextXAlignment = Enum.TextXAlignment.Left,
-    ZIndex = 2102,
-    Parent = SideNavPanel
+    ZIndex = 3,
+    Parent = SideMenuPanel
 })
 
 local SideTabList = create("Frame", {
-    Position = UDim2.new(0, 12, 0, 40),
-    Size = UDim2.new(1, -24, 1, -116),
+    Position = UDim2.fromOffset(12, 40),
+    Size = UDim2.fromOffset(196, BASE_HEIGHT - 196),
     BackgroundTransparency = 1,
-    ZIndex = 2102,
-    Parent = SideNavPanel
+    ZIndex = 3,
+    Parent = SideMenuPanel
 })
 
 create("UIListLayout", {
@@ -1190,310 +1007,311 @@ create("UIListLayout", {
     Parent = SideTabList
 })
 
-local OperatorPod = create("Frame", {
+-- Kartu Profil di Bawah SideMenu
+local UserFooterCard = create("Frame", {
     AnchorPoint = Vector2.new(0.5, 1),
     Position = UDim2.new(0.5, 0, 1, -12),
     Size = UDim2.new(1, -24, 0, 62),
     BackgroundColor3 = Color3.new(1, 1, 1),
-    ZIndex = 2102,
-    Parent = SideNavPanel
+    ZIndex = 3,
+    Parent = SideMenuPanel
 })
-addCorner(OperatorPod, 10)
-attachPremierePanelGradient(OperatorPod, 45)
-local opPodStroke = addStroke(OperatorPod, Color3.new(1, 1, 1), 1.2, 0.2)
+addCorner(UserFooterCard, 10)
+attachPremiereGradient(UserFooterCard, 35)
+local footerStroke = addStroke(UserFooterCard, Color3.new(1, 1, 1), 1, 0.25)
 
-local OperatorName = create("TextLabel", {
-    Position = UDim2.new(0, 12, 0, 10),
+local FooterUserText = create("TextLabel", {
+    Position = UDim2.fromOffset(12, 10),
     Size = UDim2.new(1, -24, 0, 20),
     BackgroundTransparency = 1,
-    Text = "OP // @" .. LocalPlayer.Name,
+    Text = "@" .. LocalPlayer.Name,
     TextXAlignment = Enum.TextXAlignment.Left,
     TextTruncate = Enum.TextTruncate.AtEnd,
-    ZIndex = 2103,
-    Parent = OperatorPod
+    ZIndex = 4,
+    Parent = UserFooterCard
 })
 
-local OperatorHint = create("TextLabel", {
-    Position = UDim2.new(0, 12, 0, 32),
+local FooterShortcutText = create("TextLabel", {
+    Position = UDim2.fromOffset(12, 32),
     Size = UDim2.new(1, -24, 0, 18),
     BackgroundTransparency = 1,
-    Text = "Key: [RightCtrl] • Drag ◢",
+    Text = "Toggle: [RightCtrl]",
     TextXAlignment = Enum.TextXAlignment.Left,
-    ZIndex = 2103,
-    Parent = OperatorPod
+    ZIndex = 4,
+    Parent = UserFooterCard
 })
 
--- [PANEL 2: CENTER INPUT CARDS MATRIX]
-local CenterMatrixPanel = create("Frame", {
-    Name = "CenterMatrixPanel",
-    Position = UDim2.new(0.21, 4, 0, 0),
-    Size = UDim2.new(0.51, -8, 1, 0),
+-- [PANEL TENGAH: MAIN INPUT CARDS MATRIX]
+local CenterContentPanel = create("Frame", {
+    Name = "CenterContentPanel",
+    Position = UDim2.fromOffset(232, 0),
+    Size = UDim2.fromOffset(536, BASE_HEIGHT - 72),
     BackgroundColor3 = Color3.new(1, 1, 1),
-    ClipsDescendants = true,
     Active = true,
-    ZIndex = 2100,
-    Parent = WorkspaceZone
+    ZIndex = 2,
+    Parent = BodyArea
 })
-addCorner(CenterMatrixPanel, 12)
-attachPremierePanelGradient(CenterMatrixPanel, 145)
-local centerStroke = addStroke(CenterMatrixPanel, Color3.new(1, 1, 1), 1.5, 0.15)
-attachAnimatedBorderGradient(centerStroke, 20)
-addCyberCornerAccents(CenterMatrixPanel, 2105)
-attachInteriorMotionGraphics(CenterMatrixPanel, 6)
+addCorner(CenterContentPanel, 14)
+attachPremiereGradient(CenterContentPanel, 155)
+local centerStroke = addStroke(CenterContentPanel, Color3.new(1, 1, 1), 1.2, 0.15)
 
-local CenterHeaderTitle = create("TextLabel", {
-    Position = UDim2.new(0, 20, 0, 14),
-    Size = UDim2.new(0.55, 0, 0, 24),
+local CenterCategoryHeader = create("TextLabel", {
+    Position = UDim2.fromOffset(22, 16),
+    Size = UDim2.new(0.58, 0, 0, 22),
     BackgroundTransparency = 1,
-    Text = "COMBAT & TELEMETRY",
+    Text = "General & Character",
     TextXAlignment = Enum.TextXAlignment.Left,
-    ZIndex = 2102,
-    Parent = CenterMatrixPanel
+    ZIndex = 3,
+    Parent = CenterContentPanel
 })
 
-local StatusToast = create("TextLabel", {
+local StatusFeedbackLabel = create("TextLabel", {
     AnchorPoint = Vector2.new(1, 0),
-    Position = UDim2.new(1, -20, 0, 16),
-    Size = UDim2.new(0.42, 0, 0, 20),
+    Position = UDim2.new(1, -22, 0, 18),
+    Size = UDim2.new(0.38, 0, 0, 18),
     BackgroundTransparency = 1,
-    Text = "● PREMIERE MOTION READY",
+    Text = "● Ready",
     TextXAlignment = Enum.TextXAlignment.Right,
-    ZIndex = 2102,
-    Parent = CenterMatrixPanel
+    ZIndex = 3,
+    Parent = CenterContentPanel
 })
 
-local function notifyStatus(msg: string)
-    StatusToast.Text = "◈ " .. msg
+local function showStatus(msg: string)
+    StatusFeedbackLabel.Text = "◈ " .. msg
 end
 
-local PagesContainer = create("Frame", {
-    Position = UDim2.new(0, 0, 0, 46),
-    Size = UDim2.new(1, 0, 1, -52),
+local PagesHolder = create("Frame", {
+    Position = UDim2.fromOffset(0, 48),
+    Size = UDim2.new(1, 0, 1, -54),
     BackgroundTransparency = 1,
-    ZIndex = 2102,
-    Parent = CenterMatrixPanel
+    ZIndex = 3,
+    Parent = CenterContentPanel
 })
 
--- [PANEL 3: RIGHT QUICK CUSTOMIZER & STUDIO]
+-- [PANEL KANAN: THEME, FONT & APPEARANCE STUDIO]
 local RightStudioPanel = create("Frame", {
     Name = "RightStudioPanel",
-    Position = UDim2.new(0.72, 4, 0, 0),
-    Size = UDim2.new(0.28, -4, 1, 0),
+    Position = UDim2.fromOffset(780, 0),
+    Size = UDim2.fromOffset(280, BASE_HEIGHT - 72),
     BackgroundColor3 = Color3.new(1, 1, 1),
-    ClipsDescendants = true,
     Active = true,
-    ZIndex = 2100,
-    Parent = WorkspaceZone
+    ZIndex = 2,
+    Parent = BodyArea
 })
-addCorner(RightStudioPanel, 12)
-attachPremierePanelGradient(RightStudioPanel, 160)
-local rightStroke = addStroke(RightStudioPanel, Color3.new(1, 1, 1), 1.5, 0.15)
-attachAnimatedBorderGradient(rightStroke, 38)
-addCyberCornerAccents(RightStudioPanel, 2105)
-attachInteriorMotionGraphics(RightStudioPanel, 4)
+addCorner(RightStudioPanel, 14)
+attachPremiereGradient(RightStudioPanel, 165)
+local rightStroke = addStroke(RightStudioPanel, Color3.new(1, 1, 1), 1.2, 0.15)
 
-local RightHeaderTitle = create("TextLabel", {
-    Position = UDim2.new(0, 16, 0, 14),
-    Size = UDim2.new(1, -32, 0, 22),
+local RightStudioTitle = create("TextLabel", {
+    Position = UDim2.fromOffset(18, 16),
+    Size = UDim2.new(0.65, 0, 0, 22),
     BackgroundTransparency = 1,
-    Text = "PREMIERE STUDIO",
+    Text = "Appearance Studio",
     TextXAlignment = Enum.TextXAlignment.Left,
-    ZIndex = 2102,
+    ZIndex = 3,
     Parent = RightStudioPanel
 })
 
-local RightScroll = create("ScrollingFrame", {
-    Position = UDim2.new(0, 0, 0, 44),
-    Size = UDim2.new(1, 0, 1, -64),
+HeaderScaleBadge = create("TextLabel", {
+    AnchorPoint = Vector2.new(1, 0),
+    Position = UDim2.new(1, -18, 0, 18),
+    Size = UDim2.fromOffset(76, 18),
+    BackgroundTransparency = 1,
+    Text = "85% View",
+    TextXAlignment = Enum.TextXAlignment.Right,
+    ZIndex = 3,
+    Parent = RightStudioPanel
+})
+
+local RightStudioScroll = create("ScrollingFrame", {
+    Position = UDim2.fromOffset(0, 48),
+    Size = UDim2.new(1, 0, 1, -96), -- Ruang bersih di bawah agar tidak bertabrakan dengan Grip Pojok Kanan Bawah
     BackgroundTransparency = 1,
     BorderSizePixel = 0,
-    ScrollBarThickness = 4,
+    ScrollBarThickness = 3,
     AutomaticCanvasSize = Enum.AutomaticSize.Y,
     CanvasSize = UDim2.new(0, 0, 0, 0),
-    ZIndex = 2102,
+    ZIndex = 3,
     Parent = RightStudioPanel
 })
-addPadding(RightScroll, 4, 18, 14, 14)
+addPadding(RightStudioScroll, 4, 16, 14, 14)
 
 create("UIListLayout", {
     Padding = UDim.new(0, 10),
     SortOrder = Enum.SortOrder.LayoutOrder,
-    Parent = RightScroll
+    Parent = RightStudioScroll
 })
 
 registerThemeUpdater(function(theme)
-    SideNavTitle.TextColor3 = theme.TextMuted
-    opPodStroke.Color = theme.Accent
-    OperatorName.TextColor3 = theme.TextPrimary
-    OperatorHint.TextColor3 = theme.Accent
+    sideStroke.Color = theme.Stroke
+    SideSectionTitle.TextColor3 = theme.TextMuted
+    footerStroke.Color = theme.Stroke
+    FooterUserText.TextColor3 = theme.TextPrimary
+    FooterShortcutText.TextColor3 = theme.Accent
 
-    CenterHeaderTitle.TextColor3 = theme.TextPrimary
-    StatusToast.TextColor3 = theme.Accent
+    centerStroke.Color = theme.Stroke
+    CenterCategoryHeader.TextColor3 = theme.TextPrimary
+    StatusFeedbackLabel.TextColor3 = theme.Accent
 
-    RightHeaderTitle.TextColor3 = theme.Accent
-    RightScroll.ScrollBarImageColor3 = theme.Accent
+    rightStroke.Color = theme.Stroke
+    RightStudioTitle.TextColor3 = theme.TextPrimary
+    if HeaderScaleBadge then
+        HeaderScaleBadge.TextColor3 = theme.Accent
+    end
+    RightStudioScroll.ScrollBarImageColor3 = theme.Accent
 end)
 
 registerFontUpdater(function(font, fSize)
-    SideNavTitle.Font = font.Bold
-    SideNavTitle.TextSize = math.round(10 * fSize.Scale)
-    OperatorName.Font = font.Bold
-    OperatorName.TextSize = math.round(12 * fSize.Scale)
-    OperatorHint.Font = font.Regular
-    OperatorHint.TextSize = math.round(11 * fSize.Scale)
-    CenterHeaderTitle.Font = font.Bold
-    CenterHeaderTitle.TextSize = math.round(15 * fSize.Scale)
-    StatusToast.Font = font.Bold
-    StatusToast.TextSize = math.round(11 * fSize.Scale)
-    RightHeaderTitle.Font = font.Bold
-    RightHeaderTitle.TextSize = math.round(13 * fSize.Scale)
+    SideSectionTitle.Font = font.Bold
+    SideSectionTitle.TextSize = math.round(10 * fSize.Scale)
+    FooterUserText.Font = font.Bold
+    FooterUserText.TextSize = math.round(12 * fSize.Scale)
+    FooterShortcutText.Font = font.Regular
+    FooterShortcutText.TextSize = math.round(11 * fSize.Scale)
+    CenterCategoryHeader.Font = font.Bold
+    CenterCategoryHeader.TextSize = math.round(15 * fSize.Scale)
+    StatusFeedbackLabel.Font = font.Medium
+    StatusFeedbackLabel.TextSize = math.round(11 * fSize.Scale)
+    RightStudioTitle.Font = font.Bold
+    RightStudioTitle.TextSize = math.round(14 * fSize.Scale)
+    if HeaderScaleBadge then
+        HeaderScaleBadge.Font = font.Bold
+        HeaderScaleBadge.TextSize = math.round(11 * fSize.Scale)
+    end
 end)
 
 -- ================================================================================
--- 8. POJOK KANAN BAWAH: INTERACTIVE RESIZE GRIP SHAPE (TARIK UNTUK UBAH UKURAN)
+-- 8. POJOK KANAN BAWAH: SHAPE RESIZE PROPORSIONAL (TEKS & BUTTON IKUT MENGECIL)
 -- ================================================================================
-local ResizeCornerPod = create("TextButton", {
-    Name = "BottomRightResizeGrip",
+local ResizeGripPod = create("TextButton", {
+    Name = "BottomRightResizeHandle",
     AnchorPoint = Vector2.new(1, 1),
-    Position = UDim2.new(1, 4, 1, 4),
-    Size = UDim2.fromOffset(146, 36),
+    Position = UDim2.new(1, -8, 1, -8),
+    Size = UDim2.fromOffset(148, 34),
     BackgroundColor3 = Color3.new(1, 1, 1),
     Text = "",
     AutoButtonColor = false,
     Active = true,
-    ZIndex = 3200,
+    ZIndex = 20,
     Parent = HUDCanvas
 })
-addCorner(ResizeCornerPod, 10)
-attachPremierePanelGradient(ResizeCornerPod, 35)
-local resizePodStroke = addStroke(ResizeCornerPod, Color3.new(1, 1, 1), 1.8, 0.05)
-attachAnimatedBorderGradient(resizePodStroke, 75)
+addCorner(ResizeGripPod, 9)
+attachPremiereGradient(ResizeGripPod, 35)
+local resizeGripStroke = addStroke(ResizeGripPod, Color3.new(1, 1, 1), 1.4, 0.1)
 
-local ResizeHintText = create("TextLabel", {
+ResizeHintLabel = create("TextLabel", {
     AnchorPoint = Vector2.new(0, 0.5),
-    Position = UDim2.new(0, 10, 0.5, 0),
-    Size = UDim2.new(1, -44, 1, 0),
+    Position = UDim2.new(0, 12, 0.5, 0),
+    Size = UDim2.new(1, -42, 1, 0),
     BackgroundTransparency = 1,
-    Text = "⇲ RESIZE 85%",
+    Text = "⇲ Scale 85%",
     TextXAlignment = Enum.TextXAlignment.Left,
-    ZIndex = 3202,
-    Parent = ResizeCornerPod
+    ZIndex = 2,
+    Parent = ResizeGripPod
 })
 
-local GripShapeBox = create("Frame", {
+-- Shape Sudut Siku & 3 Garis Diagonal di Pojok Kanan Bawah
+local GripArtFrame = create("Frame", {
     AnchorPoint = Vector2.new(1, 1),
     Position = UDim2.new(1, -6, 1, -6),
-    Size = UDim2.fromOffset(26, 24),
+    Size = UDim2.fromOffset(22, 22),
     BackgroundTransparency = 1,
-    ZIndex = 3202,
-    Parent = ResizeCornerPod
+    ZIndex = 2,
+    Parent = ResizeGripPod
 })
 
-local CornerBracketH = create("Frame", {
+local CornerLineH = create("Frame", {
     AnchorPoint = Vector2.new(1, 1),
-    Position = UDim2.new(1, 0, 1, 0),
-    Size = UDim2.fromOffset(18, 3),
+    Position = UDim2.fromScale(1, 1),
+    Size = UDim2.fromOffset(16, 2),
     BorderSizePixel = 0,
-    ZIndex = 3203,
-    Parent = GripShapeBox
+    Parent = GripArtFrame
 })
-addCorner(CornerBracketH, 99)
-
-local CornerBracketV = create("Frame", {
+local CornerLineV = create("Frame", {
     AnchorPoint = Vector2.new(1, 1),
-    Position = UDim2.new(1, 0, 1, 0),
-    Size = UDim2.fromOffset(3, 18),
+    Position = UDim2.fromScale(1, 1),
+    Size = UDim2.fromOffset(2, 16),
     BorderSizePixel = 0,
-    ZIndex = 3203,
-    Parent = GripShapeBox
+    Parent = GripArtFrame
 })
-addCorner(CornerBracketV, 99)
-
-local GripDiag1 = create("Frame", {
+local DiagBar1 = create("Frame", {
     AnchorPoint = Vector2.new(0.5, 0.5),
-    Position = UDim2.new(1, -6, 1, -6),
-    Size = UDim2.fromOffset(8, 2),
+    Position = UDim2.new(1, -5, 1, -5),
+    Size = UDim2.fromOffset(7, 2),
     Rotation = -45,
     BorderSizePixel = 0,
-    ZIndex = 3203,
-    Parent = GripShapeBox
+    Parent = GripArtFrame
 })
-local GripDiag2 = create("Frame", {
+local DiagBar2 = create("Frame", {
     AnchorPoint = Vector2.new(0.5, 0.5),
-    Position = UDim2.new(1, -11, 1, -11),
-    Size = UDim2.fromOffset(14, 2),
+    Position = UDim2.new(1, -10, 1, -10),
+    Size = UDim2.fromOffset(13, 2),
     Rotation = -45,
     BorderSizePixel = 0,
-    ZIndex = 3203,
-    Parent = GripShapeBox
+    Parent = GripArtFrame
 })
-local GripDiag3 = create("Frame", {
+local DiagBar3 = create("Frame", {
     AnchorPoint = Vector2.new(0.5, 0.5),
-    Position = UDim2.new(1, -16, 1, -16),
-    Size = UDim2.fromOffset(20, 2),
+    Position = UDim2.new(1, -15, 1, -15),
+    Size = UDim2.fromOffset(18, 2),
     Rotation = -45,
     BorderSizePixel = 0,
-    ZIndex = 3203,
-    Parent = GripShapeBox
+    Parent = GripArtFrame
 })
 
 registerThemeUpdater(function(theme)
-    ResizeHintText.TextColor3 = theme.Accent
-    CornerBracketH.BackgroundColor3 = theme.Accent
-    CornerBracketV.BackgroundColor3 = theme.Accent
-    GripDiag1.BackgroundColor3 = theme.TextPrimary
-    GripDiag2.BackgroundColor3 = theme.Accent
-    GripDiag3.BackgroundColor3 = theme.AccentSecondary
+    resizeGripStroke.Color = theme.Accent
+    if ResizeHintLabel then
+        ResizeHintLabel.TextColor3 = theme.TextPrimary
+    end
+    CornerLineH.BackgroundColor3 = theme.Accent
+    CornerLineV.BackgroundColor3 = theme.Accent
+    DiagBar1.BackgroundColor3 = theme.TextPrimary
+    DiagBar2.BackgroundColor3 = theme.Accent
+    DiagBar3.BackgroundColor3 = theme.AccentSecondary
 end)
 
 registerFontUpdater(function(font, fSize)
-    ResizeHintText.Font = font.Bold
-    ResizeHintText.TextSize = math.round(11 * fSize.Scale)
+    if ResizeHintLabel then
+        ResizeHintLabel.Font = font.Bold
+        ResizeHintLabel.TextSize = math.round(11 * fSize.Scale)
+    end
 end)
 
-ResizeCornerPod.MouseEnter:Connect(function()
-    TweenService:Create(ResizeCornerPod, TweenFast, {
-        Size = UDim2.fromOffset(162, 40)
-    }):Play()
-    ResizeHintText.Text = "⇲ TARIK SUDUT"
+ResizeGripPod.MouseEnter:Connect(function()
+    TweenService:Create(ResizeGripPod, TweenFast, { Size = UDim2.fromOffset(160, 36) }):Play()
+    if ResizeHintLabel then
+        ResizeHintLabel.Text = "⇲ Tarik Ukuran"
+    end
 end)
 
-ResizeCornerPod.MouseLeave:Connect(function()
-    local pctX = math.round(State.WindowScaleX * 100)
-    local pctY = math.round(State.WindowScaleY * 100)
-    TweenService:Create(ResizeCornerPod, TweenFast, {
-        Size = UDim2.fromOffset(146, 36)
-    }):Play()
-    ResizeHintText.Text = string.format("⇲ %d%% × %d%%", pctX, pctY)
+ResizeGripPod.MouseLeave:Connect(function()
+    TweenService:Create(ResizeGripPod, TweenFast, { Size = UDim2.fromOffset(148, 34) }):Play()
+    if ResizeHintLabel then
+        ResizeHintLabel.Text = string.format("⇲ Scale %d%%", math.round(State.UserZoomFactor * 100))
+    end
 end)
 
+-- Logika Tarik Pojok Kanan Bawah -> Mengubah UIScale Secara Proporsional (Bukan Crop!)
 do
     local isResizing = false
-    local resizeStartPos = Vector3.zero
-    local startScaleX = State.WindowScaleX
-    local startScaleY = State.WindowScaleY
-    local lastClickTick = 0
+    local startMouse = Vector3.zero
+    local startZoom = State.UserZoomFactor
+    local lastClick = 0
 
-    ResizeCornerPod.InputBegan:Connect(function(input: InputObject)
+    ResizeGripPod.InputBegan:Connect(function(input: InputObject)
         if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
             local now = tick()
-            if (now - lastClickTick) < 0.32 then
-                State.WindowScaleX = 0.85
-                State.WindowScaleY = 0.85
-                TweenService:Create(HUDCanvas, TweenSpring, {
-                    Size = UDim2.fromScale(0.85, 0.85)
-                }):Play()
-                ResizeHintText.Text = "⇲ RESET 85%"
-                HeaderSubTitle.Text = "SCALE: 85%x85% • MOTION ON"
-                notifyStatus("Ukuran di-reset ke 85% layar")
+            if (now - lastClick) < 0.32 then
+                State.UserZoomFactor = 0.85
+                computeAndApplyProportionalScale()
+                showStatus("Reset Scale ke 85%")
                 return
             end
-            lastClickTick = now
-
+            lastClick = now
             isResizing = true
-            resizeStartPos = input.Position
-            startScaleX = State.WindowScaleX
-            startScaleY = State.WindowScaleY
+            startMouse = input.Position
+            startZoom = State.UserZoomFactor
         end
     end)
 
@@ -1502,29 +1320,17 @@ do
             local cam = workspace.CurrentCamera
             if not cam then return end
             local vp = cam.ViewportSize
-            local delta = input.Position - resizeStartPos
-
-            local dScaleX = (delta.X * 1.6) / math.max(vp.X, 1)
-            local dScaleY = (delta.Y * 1.6) / math.max(vp.Y, 1)
-
-            State.WindowScaleX = math.clamp(startScaleX + dScaleX, 0.55, 0.95)
-            State.WindowScaleY = math.clamp(startScaleY + dScaleY, 0.55, 0.95)
-
-            HUDCanvas.Size = UDim2.fromScale(State.WindowScaleX, State.WindowScaleY)
-
-            local pctX = math.round(State.WindowScaleX * 100)
-            local pctY = math.round(State.WindowScaleY * 100)
-            ResizeHintText.Text = string.format("⇲ %d%% × %d%%", pctX, pctY)
-            HeaderSubTitle.Text = string.format("SCALE: %d%%x%d%% • MOTION ON", pctX, pctY)
+            local delta = input.Position - startMouse
+            local deltaRatio = ((delta.X / math.max(vp.X, 1)) + (delta.Y / math.max(vp.Y, 1))) * 0.85
+            State.UserZoomFactor = math.clamp(startZoom + deltaRatio, 0.50, 0.96)
+            computeAndApplyProportionalScale()
         end
     end)
 
     UserInputService.InputEnded:Connect(function(input: InputObject)
         if isResizing and (input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch) then
             isResizing = false
-            local pctX = math.round(State.WindowScaleX * 100)
-            local pctY = math.round(State.WindowScaleY * 100)
-            notifyStatus(string.format("Ukuran HUD: %d%% × %d%%", pctX, pctY))
+            showStatus(string.format("Proportional Scale: %d%%", math.round(State.UserZoomFactor * 100)))
         end
     end)
 end
@@ -1533,6 +1339,7 @@ end
 -- 9. SISTEM PERPINDAHAN POSISI MENU (TRI-HUD / DOCK KIRI / TENGAH / KANAN)
 -- ================================================================================
 local DockModeButtons: { [string]: TextButton } = {}
+local H_BODY = BASE_HEIGHT - 72
 
 local function applyLayoutMode(mode: string)
     State.LayoutMode = mode
@@ -1546,59 +1353,59 @@ local function applyLayoutMode(mode: string)
     end
 
     if mode == "Tri-HUD" then
-        SideNavPanel.Visible = true
+        SideMenuPanel.Visible = true
         RightStudioPanel.Visible = true
-        TweenService:Create(SideNavPanel, TweenSmooth, {
-            Position = UDim2.fromScale(0, 0),
-            Size = UDim2.new(0.21, -8, 1, 0)
+        TweenService:Create(SideMenuPanel, TweenSmooth, {
+            Position = UDim2.fromOffset(0, 0),
+            Size = UDim2.fromOffset(220, H_BODY)
         }):Play()
-        TweenService:Create(CenterMatrixPanel, TweenSmooth, {
-            Position = UDim2.new(0.21, 4, 0, 0),
-            Size = UDim2.new(0.51, -8, 1, 0)
+        TweenService:Create(CenterContentPanel, TweenSmooth, {
+            Position = UDim2.fromOffset(232, 0),
+            Size = UDim2.fromOffset(536, H_BODY)
         }):Play()
         TweenService:Create(RightStudioPanel, TweenSmooth, {
-            Position = UDim2.new(0.72, 4, 0, 0),
-            Size = UDim2.new(0.28, -4, 1, 0)
+            Position = UDim2.fromOffset(780, 0),
+            Size = UDim2.fromOffset(280, H_BODY)
         }):Play()
     elseif mode == "Dock Kiri" then
-        SideNavPanel.Visible = true
+        SideMenuPanel.Visible = true
         RightStudioPanel.Visible = false
-        TweenService:Create(SideNavPanel, TweenSmooth, {
-            Position = UDim2.fromScale(0, 0),
-            Size = UDim2.new(0.24, -8, 1, 0)
+        TweenService:Create(SideMenuPanel, TweenSmooth, {
+            Position = UDim2.fromOffset(0, 0),
+            Size = UDim2.fromOffset(240, H_BODY)
         }):Play()
-        TweenService:Create(CenterMatrixPanel, TweenSmooth, {
-            Position = UDim2.new(0.24, 4, 0, 0),
-            Size = UDim2.new(0.76, -4, 1, 0)
+        TweenService:Create(CenterContentPanel, TweenSmooth, {
+            Position = UDim2.fromOffset(252, 0),
+            Size = UDim2.fromOffset(808, H_BODY)
         }):Play()
     elseif mode == "Fokus Tengah" then
-        SideNavPanel.Visible = true
+        SideMenuPanel.Visible = true
         RightStudioPanel.Visible = true
         TweenService:Create(RightStudioPanel, TweenSmooth, {
-            Position = UDim2.fromScale(0, 0),
-            Size = UDim2.new(0.25, -8, 1, 0)
+            Position = UDim2.fromOffset(0, 0),
+            Size = UDim2.fromOffset(270, H_BODY)
         }):Play()
-        TweenService:Create(CenterMatrixPanel, TweenSmooth, {
-            Position = UDim2.new(0.25, 4, 0, 0),
-            Size = UDim2.new(0.50, -8, 1, 0)
+        TweenService:Create(CenterContentPanel, TweenSmooth, {
+            Position = UDim2.fromOffset(282, 0),
+            Size = UDim2.fromOffset(546, H_BODY)
         }):Play()
-        TweenService:Create(SideNavPanel, TweenSmooth, {
-            Position = UDim2.new(0.75, 4, 0, 0),
-            Size = UDim2.new(0.25, -4, 1, 0)
+        TweenService:Create(SideMenuPanel, TweenSmooth, {
+            Position = UDim2.fromOffset(840, 0),
+            Size = UDim2.fromOffset(220, H_BODY)
         }):Play()
     elseif mode == "Dock Kanan" then
-        SideNavPanel.Visible = true
+        SideMenuPanel.Visible = true
         RightStudioPanel.Visible = false
-        TweenService:Create(CenterMatrixPanel, TweenSmooth, {
-            Position = UDim2.fromScale(0, 0),
-            Size = UDim2.new(0.76, -8, 1, 0)
+        TweenService:Create(CenterContentPanel, TweenSmooth, {
+            Position = UDim2.fromOffset(0, 0),
+            Size = UDim2.fromOffset(808, H_BODY)
         }):Play()
-        TweenService:Create(SideNavPanel, TweenSmooth, {
-            Position = UDim2.new(0.76, 4, 0, 0),
-            Size = UDim2.new(0.24, -4, 1, 0)
+        TweenService:Create(SideMenuPanel, TweenSmooth, {
+            Position = UDim2.fromOffset(820, 0),
+            Size = UDim2.fromOffset(240, H_BODY)
         }):Play()
     end
-    notifyStatus("Mode Posisi: " .. mode)
+    showStatus("Layout: " .. mode)
 end
 
 local dockModes = { "Tri-HUD", "Dock Kiri", "Fokus Tengah", "Dock Kanan" }
@@ -1606,18 +1413,18 @@ create("UIListLayout", {
     FillDirection = Enum.FillDirection.Horizontal,
     HorizontalAlignment = Enum.HorizontalAlignment.Center,
     VerticalAlignment = Enum.VerticalAlignment.Center,
-    Padding = UDim.new(0, 4),
-    Parent = DockSwitchBar
+    Padding = UDim.new(0, 5),
+    Parent = DockSwitchContainer
 })
 
 for i, mName in ipairs(dockModes) do
     local dBtn = create("TextButton", {
         LayoutOrder = i,
-        Size = UDim2.fromOffset(74, 28),
+        Size = UDim2.fromOffset(80, 28),
         Text = mName,
         AutoButtonColor = false,
-        ZIndex = 2104,
-        Parent = DockSwitchBar
+        ZIndex = 4,
+        Parent = DockSwitchContainer
     })
     addCorner(dBtn, 6)
     DockModeButtons[mName] = dBtn
@@ -1634,23 +1441,23 @@ for i, mName in ipairs(dockModes) do
 
     registerFontUpdater(function(font, fSize)
         dBtn.Font = font.Bold
-        dBtn.TextSize = math.clamp(math.round(10 * fSize.Scale), 9, 12)
+        dBtn.TextSize = math.clamp(math.round(11 * fSize.Scale), 9, 13)
     end)
 end
 
 -- ================================================================================
--- 10. BUILDER TAB & INPUT CARDS (DENGAN PREMIERE CARD GRADIENT & CASCADE MOTION)
+-- 10. KOMPONEN TAB & INPUT CARDS (SEMUA TEKS TERLIHAT JELAS & RESPONSIF)
 -- ================================================================================
-local Tabs: { [string]: { Button: TextButton, Bar: Frame, Page: ScrollingFrame, Title: string, Cards: { UIScale } } } = {}
+local Tabs: { [string]: { Button: TextButton, Indicator: Frame, Page: ScrollingFrame, Title: string, CardScales: { UIScale } } } = {}
 local SearchableCards: { { Frame: Frame, Keywords: string, TabId: string } } = {}
 
-local function playTabCascadeMotion(tabId: string)
+local function animateTabCards(tabId: string)
     local data = Tabs[tabId]
     if not data or not State.MotionEnabled then return end
-    for idx, cScale in ipairs(data.Cards) do
-        cScale.Scale = 0.88
-        task.delay((idx - 1) * 0.035, function()
-            TweenService:Create(cScale, TweenSpring, { Scale = 1 }):Play()
+    for idx, cs in ipairs(data.CardScales) do
+        cs.Scale = 0.94
+        task.delay((idx - 1) * 0.025, function()
+            TweenService:Create(cs, TweenSmooth, { Scale = 1 }):Play()
         end)
     end
 end
@@ -1662,23 +1469,23 @@ local function selectTab(tabId: string)
         local isCurrent = (id == tabId)
         data.Page.Visible = isCurrent
         if isCurrent then
-            CenterHeaderTitle.Text = data.Title
+            CenterCategoryHeader.Text = data.Title
             TweenService:Create(data.Button, TweenFast, {
                 BackgroundColor3 = theme.SelectorBg,
-                TextColor3 = theme.Accent
+                TextColor3 = theme.TextPrimary
             }):Play()
-            TweenService:Create(data.Bar, TweenFast, {
-                Size = UDim2.new(0, 4, 0.65, 0),
+            TweenService:Create(data.Indicator, TweenFast, {
+                Size = UDim2.new(0, 3, 0.6, 0),
                 BackgroundTransparency = 0
             }):Play()
-            playTabCascadeMotion(id)
+            animateTabCards(id)
         else
             TweenService:Create(data.Button, TweenFast, {
                 BackgroundColor3 = theme.CardBg,
                 TextColor3 = theme.TextSecondary
             }):Play()
-            TweenService:Create(data.Bar, TweenFast, {
-                Size = UDim2.new(0, 4, 0, 0),
+            TweenService:Create(data.Indicator, TweenFast, {
+                Size = UDim2.new(0, 3, 0, 0),
                 BackgroundTransparency = 1
             }):Play()
         end
@@ -1692,35 +1499,35 @@ local function createSideTab(tabId: string, icon: string, label: string, headerT
         Text = "     " .. icon .. "   " .. label,
         TextXAlignment = Enum.TextXAlignment.Left,
         AutoButtonColor = false,
-        ZIndex = 2103,
+        ZIndex = 4,
         Parent = SideTabList
     })
     addCorner(btn, 9)
     local tabStroke = addStroke(btn, Color3.new(1, 1, 1), 1, 0.35)
 
-    local bar = create("Frame", {
+    local ind = create("Frame", {
         AnchorPoint = Vector2.new(0, 0.5),
         Position = UDim2.new(0, 5, 0.5, 0),
-        Size = UDim2.new(0, 4, 0, 0),
+        Size = UDim2.new(0, 3, 0, 0),
         BackgroundTransparency = 1,
-        ZIndex = 2104,
+        ZIndex = 5,
         Parent = btn
     })
-    addCorner(bar, 99)
+    addCorner(ind, 99)
 
     local page = create("ScrollingFrame", {
         Name = tabId .. "Page",
         Size = UDim2.fromScale(1, 1),
         BackgroundTransparency = 1,
         BorderSizePixel = 0,
-        ScrollBarThickness = 4,
+        ScrollBarThickness = 3,
         AutomaticCanvasSize = Enum.AutomaticSize.Y,
         CanvasSize = UDim2.new(0, 0, 0, 0),
         Visible = false,
-        ZIndex = 2103,
-        Parent = PagesContainer
+        ZIndex = 4,
+        Parent = PagesHolder
     })
-    addPadding(page, 4, 22, 18, 18)
+    addPadding(page, 4, 24, 18, 18)
 
     create("UIListLayout", {
         Padding = UDim.new(0, 10),
@@ -1733,25 +1540,12 @@ local function createSideTab(tabId: string, icon: string, label: string, headerT
         selectTab(tabId)
     end)
 
-    btn.MouseEnter:Connect(function()
-        if State.CurrentTab ~= tabId then
-            local theme = getTheme()
-            TweenService:Create(btn, TweenFast, { BackgroundColor3 = theme.CardHover }):Play()
-        end
-    end)
-    btn.MouseLeave:Connect(function()
-        if State.CurrentTab ~= tabId then
-            local theme = getTheme()
-            TweenService:Create(btn, TweenFast, { BackgroundColor3 = theme.CardBg }):Play()
-        end
-    end)
-
     registerThemeUpdater(function(theme)
         local isCurrent = (State.CurrentTab == tabId)
         btn.BackgroundColor3 = isCurrent and theme.SelectorBg or theme.CardBg
-        btn.TextColor3 = isCurrent and theme.Accent or theme.TextSecondary
+        btn.TextColor3 = isCurrent and theme.TextPrimary or theme.TextSecondary
         tabStroke.Color = isCurrent and theme.Accent or theme.Stroke
-        bar.BackgroundColor3 = theme.Accent
+        ind.BackgroundColor3 = theme.Accent
         page.ScrollBarImageColor3 = theme.Accent
     end)
 
@@ -1761,23 +1555,25 @@ local function createSideTab(tabId: string, icon: string, label: string, headerT
         btn.Size = UDim2.new(1, 0, 0, math.round(38 * fSize.Scale))
     end)
 
-    Tabs[tabId] = { Button = btn, Bar = bar, Page = page, Title = headerTitle, Cards = {} }
+    Tabs[tabId] = { Button = btn, Indicator = ind, Page = page, Title = headerTitle, CardScales = {} }
     return page
 end
 
-local function createCardShell(parent: ScrollingFrame, tabId: string, title: string, desc: string, extraHeight: number, order: number): Frame
+-- Kerangka Kartu Input (Mendukung Kartu Lebar di Tengah & Kartu Kompak di Studio Kanan)
+local function createCardShell(parent: ScrollingFrame, tabId: string, title: string, desc: string, isCompact: boolean, extraH: number, order: number): Frame
+    local baseH = isCompact and 82 or 64
     local card = create("Frame", {
         LayoutOrder = order,
-        Size = UDim2.new(1, 0, 0, 66 + extraHeight),
+        Size = UDim2.new(1, 0, 0, baseH + extraH),
         BackgroundColor3 = Color3.new(1, 1, 1),
-        ZIndex = 2104,
+        ZIndex = 4,
         Parent = parent
     })
     addCorner(card, 10)
-    local cStroke = addStroke(card, Color3.new(1, 1, 1), 1, 0.2)
+    local cStroke = addStroke(card, Color3.new(1, 1, 1), 1, 0.22)
 
     local cardGrad = create("UIGradient", {
-        Rotation = 20,
+        Rotation = 25,
         Parent = card
     })
 
@@ -1786,52 +1582,37 @@ local function createCardShell(parent: ScrollingFrame, tabId: string, title: str
         Parent = card
     })
     if tabId ~= "" and Tabs[tabId] then
-        table.insert(Tabs[tabId].Cards, cScale)
+        table.insert(Tabs[tabId].CardScales, cScale)
     end
 
-    local accentTick = create("Frame", {
-        AnchorPoint = Vector2.new(0, 0.5),
-        Position = UDim2.new(0, 0, 0.5, 0),
-        Size = UDim2.new(0, 3, 0.55, 0),
-        BorderSizePixel = 0,
-        ZIndex = 2105,
-        Parent = card
-    })
-    addCorner(accentTick, 99)
-
     local titleLbl = create("TextLabel", {
-        Position = UDim2.new(0, 16, 0, 10),
-        Size = UDim2.new(0.54, 0, 0, 20),
+        Position = UDim2.fromOffset(14, 9),
+        Size = isCompact and UDim2.new(1, -28, 0, 18) or UDim2.new(0.55, 0, 0, 20),
         BackgroundTransparency = 1,
         Text = title,
         TextXAlignment = Enum.TextXAlignment.Left,
-        TextTruncate = Enum.TextTruncate.AtEnd,
-        ZIndex = 2105,
+        ZIndex = 5,
         Parent = card
     })
 
     local descLbl = create("TextLabel", {
-        Position = UDim2.new(0, 16, 0, 32),
-        Size = UDim2.new(0.54, 0, 0, 18),
+        Position = UDim2.fromOffset(14, 29),
+        Size = isCompact and UDim2.new(1, -28, 0, 15) or UDim2.new(0.55, 0, 0, 18),
         BackgroundTransparency = 1,
         Text = desc,
         TextXAlignment = Enum.TextXAlignment.Left,
-        TextTruncate = Enum.TextTruncate.AtEnd,
-        ZIndex = 2105,
+        Visible = not isCompact,
+        ZIndex = 5,
         Parent = card
     })
 
     card.MouseEnter:Connect(function()
         local theme = getTheme()
         TweenService:Create(cStroke, TweenFast, { Color = theme.Accent, Transparency = 0 }):Play()
-        if State.MotionEnabled then
-            TweenService:Create(cScale, TweenFast, { Scale = 1.015 }):Play()
-        end
     end)
     card.MouseLeave:Connect(function()
         local theme = getTheme()
-        TweenService:Create(cStroke, TweenFast, { Color = theme.Stroke, Transparency = 0.2 }):Play()
-        TweenService:Create(cScale, TweenFast, { Scale = 1 }):Play()
+        TweenService:Create(cStroke, TweenFast, { Color = theme.Stroke, Transparency = 0.22 }):Play()
     end)
 
     registerThemeUpdater(function(theme)
@@ -1841,18 +1622,17 @@ local function createCardShell(parent: ScrollingFrame, tabId: string, title: str
             ColorSequenceKeypoint.new(1.0, theme.GradStart)
         })
         cStroke.Color = theme.Stroke
-        accentTick.BackgroundColor3 = theme.Accent
         titleLbl.TextColor3 = theme.TextPrimary
         descLbl.TextColor3 = theme.TextSecondary
     end)
 
     registerFontUpdater(function(font, fSize)
         titleLbl.Font = font.Bold
-        titleLbl.TextSize = math.round(13 * fSize.Scale)
+        titleLbl.TextSize = math.round((isCompact and 12 or 13) * fSize.Scale)
         descLbl.Font = font.Regular
         descLbl.TextSize = math.round(11 * fSize.Scale)
-        descLbl.Position = UDim2.new(0, 16, 0, math.round(31 * fSize.Scale))
-        card.Size = UDim2.new(1, 0, 0, fSize.CardPad + extraHeight)
+        local targetH = (isCompact and math.round(74 * fSize.Scale) or fSize.CardHeight) + extraH
+        card.Size = UDim2.new(1, 0, 0, targetH)
     end)
 
     if tabId ~= "" then
@@ -1866,37 +1646,39 @@ local function createCardShell(parent: ScrollingFrame, tabId: string, title: str
     return card
 end
 
-local function addSelectorCard(parent: ScrollingFrame, tabId: string, title: string, desc: string, options: { string }, defaultIdx: number, order: number, onSelect: (string, number) -> ())
-    local card = createCardShell(parent, tabId, title, desc, 0, order)
+-- 1. SELECTOR CARD (BG Pilihan menyesuaikan Ukuran Font & semua teks terlihat utuh)
+local function addSelectorCard(parent: ScrollingFrame, tabId: string, title: string, desc: string, isCompact: boolean, options: { string }, defaultIdx: number, order: number, onSelect: (string, number) -> ())
+    local card = createCardShell(parent, tabId, title, desc, isCompact, 0, order)
     local currentIdx = defaultIdx
 
     local choicePill = create("TextButton", {
-        AnchorPoint = Vector2.new(1, 0.5),
-        Position = UDim2.new(1, -14, 0.5, 0),
-        Size = UDim2.fromOffset(174, 36),
+        AnchorPoint = isCompact and Vector2.new(0.5, 1) or Vector2.new(1, 0.5),
+        Position = isCompact and UDim2.new(0.5, 0, 1, -8) or UDim2.new(1, -14, 0.5, 0),
+        Size = isCompact and UDim2.new(1, -24, 0, 30) or UDim2.fromOffset(176, 34),
         Text = "◂  " .. options[currentIdx] .. "  ▸",
         AutoButtonColor = false,
-        ZIndex = 2106,
+        ZIndex = 6,
         Parent = card
     })
     addCorner(choicePill, 8)
-    local pillStroke = addStroke(choicePill, Color3.new(1, 1, 1), 1.2, 0.15)
+    local pillStroke = addStroke(choicePill, Color3.new(1, 1, 1), 1, 0.2)
+
+    local function updatePillSize()
+        local fSize = getFontSize()
+        if isCompact then
+            choicePill.Size = UDim2.new(1, -24, 0, math.round(30 * fSize.Scale))
+        else
+            local textLen = string.len(choicePill.Text)
+            local dynamicW = math.clamp(math.round(textLen * 7.5 * fSize.Scale), fSize.PillMinW, 220)
+            choicePill.Size = UDim2.fromOffset(dynamicW, fSize.PillHeight)
+        end
+    end
 
     choicePill.MouseButton1Click:Connect(function()
         currentIdx = (currentIdx % #options) + 1
         choicePill.Text = "◂  " .. options[currentIdx] .. "  ▸"
+        updatePillSize()
         onSelect(options[currentIdx], currentIdx)
-    end)
-
-    choicePill.MouseEnter:Connect(function()
-        local theme = getTheme()
-        TweenService:Create(choicePill, TweenFast, { BackgroundColor3 = theme.SelectorHover }):Play()
-        TweenService:Create(pillStroke, TweenFast, { Color = theme.Accent, Thickness = 1.8 }):Play()
-    end)
-    choicePill.MouseLeave:Connect(function()
-        local theme = getTheme()
-        TweenService:Create(choicePill, TweenFast, { BackgroundColor3 = theme.SelectorBg }):Play()
-        TweenService:Create(pillStroke, TweenFast, { Color = theme.Accent, Thickness = 1.2 }):Play()
     end)
 
     registerThemeUpdater(function(theme)
@@ -1907,32 +1689,31 @@ local function addSelectorCard(parent: ScrollingFrame, tabId: string, title: str
 
     registerFontUpdater(function(font, fSize)
         choicePill.Font = font.Bold
-        choicePill.TextSize = math.round(12 * fSize.Scale)
-        local textLen = string.len(choicePill.Text)
-        local dynamicWidth = math.max(fSize.PillWidth, math.round(textLen * 7.5 * fSize.Scale))
-        choicePill.Size = UDim2.fromOffset(math.min(dynamicWidth, 230), fSize.PillHeight)
+        choicePill.TextSize = math.round(11 * fSize.Scale)
+        updatePillSize()
     end)
 end
 
+-- 2. TOGGLE SWITCH CARD
 local function addToggleCard(parent: ScrollingFrame, tabId: string, title: string, desc: string, defaultState: boolean, order: number, onToggle: (boolean) -> ())
-    local card = createCardShell(parent, tabId, title, desc, 0, order)
+    local card = createCardShell(parent, tabId, title, desc, false, 0, order)
     local state = defaultState
 
     local statusPill = create("TextButton", {
         AnchorPoint = Vector2.new(1, 0.5),
         Position = UDim2.new(1, -14, 0.5, 0),
         Size = UDim2.fromOffset(96, 34),
-        Text = state and "ONLINE ●" or "OFFLINE ○",
+        Text = state and "Enabled ●" or "Disabled ○",
         AutoButtonColor = false,
-        ZIndex = 2106,
+        ZIndex = 6,
         Parent = card
     })
     addCorner(statusPill, 8)
-    local toggleStroke = addStroke(statusPill, Color3.new(1, 1, 1), 1.2, 0.15)
+    local toggleStroke = addStroke(statusPill, Color3.new(1, 1, 1), 1, 0.2)
 
-    local function syncToggleVisual()
+    local function syncVisual()
         local theme = getTheme()
-        statusPill.Text = state and "ONLINE ●" or "OFFLINE ○"
+        statusPill.Text = state and "Enabled ●" or "Disabled ○"
         TweenService:Create(statusPill, TweenFast, {
             BackgroundColor3 = state and theme.SelectorBg or theme.InputBg,
             TextColor3 = state and theme.Accent or theme.TextMuted
@@ -1944,31 +1725,32 @@ local function addToggleCard(parent: ScrollingFrame, tabId: string, title: strin
 
     statusPill.MouseButton1Click:Connect(function()
         state = not state
-        syncToggleVisual()
+        syncVisual()
         onToggle(state)
-        notifyStatus(title .. " -> " .. (state and "ON" or "OFF"))
+        showStatus(title .. ": " .. (state and "ON" or "OFF"))
     end)
 
     registerThemeUpdater(function()
-        syncToggleVisual()
+        syncVisual()
     end)
 
     registerFontUpdater(function(font, fSize)
         statusPill.Font = font.Bold
         statusPill.TextSize = math.round(11 * fSize.Scale)
-        statusPill.Size = UDim2.fromOffset(math.round(104 * fSize.Scale), fSize.PillHeight)
+        statusPill.Size = UDim2.fromOffset(math.round(108 * fSize.Scale), fSize.PillHeight)
     end)
 end
 
+-- 3. SLIDER BAR CARD
 local function addSliderCard(parent: ScrollingFrame, tabId: string, title: string, desc: string, minVal: number, maxVal: number, defaultVal: number, suffix: string, order: number, onSlide: (number) -> ())
-    local card = createCardShell(parent, tabId, title, desc, 16, order)
+    local card = createCardShell(parent, tabId, title, desc, false, 16, order)
     local val = math.clamp(defaultVal, minVal, maxVal)
 
     local valuePill = create("Frame", {
         AnchorPoint = Vector2.new(1, 0),
         Position = UDim2.new(1, -14, 0, 10),
-        Size = UDim2.fromOffset(78, 26),
-        ZIndex = 2105,
+        Size = UDim2.fromOffset(76, 24),
+        ZIndex = 5,
         Parent = card
     })
     addCorner(valuePill, 6)
@@ -1978,15 +1760,15 @@ local function addSliderCard(parent: ScrollingFrame, tabId: string, title: strin
         Size = UDim2.fromScale(1, 1),
         BackgroundTransparency = 1,
         Text = tostring(val) .. suffix,
-        ZIndex = 2106,
+        ZIndex = 6,
         Parent = valuePill
     })
 
     local track = create("Frame", {
         AnchorPoint = Vector2.new(0.5, 1),
-        Position = UDim2.new(0.5, 0, 1, -12),
-        Size = UDim2.new(1, -32, 0, 8),
-        ZIndex = 2105,
+        Position = UDim2.new(0.5, 0, 1, -11),
+        Size = UDim2.new(1, -28, 0, 7),
+        ZIndex = 5,
         Parent = card
     })
     addCorner(track, 99)
@@ -1995,14 +1777,11 @@ local function addSliderCard(parent: ScrollingFrame, tabId: string, title: strin
     local fill = create("Frame", {
         Size = UDim2.new(fillRatio, 0, 1, 0),
         BackgroundColor3 = Color3.new(1, 1, 1),
-        ZIndex = 2106,
+        ZIndex = 6,
         Parent = track
     })
     addCorner(fill, 99)
-
-    local fillGrad = create("UIGradient", {
-        Parent = fill
-    })
+    local fillGrad = create("UIGradient", { Parent = fill })
 
     local sliding = false
     local function updateFromX(screenX: number)
@@ -2030,7 +1809,7 @@ local function addSliderCard(parent: ScrollingFrame, tabId: string, title: strin
     UserInputService.InputEnded:Connect(function(input: InputObject)
         if sliding and (input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch) then
             sliding = false
-            notifyStatus(title .. ": " .. tostring(val) .. suffix)
+            showStatus(title .. ": " .. tostring(val) .. suffix)
         end
     end)
 
@@ -2047,30 +1826,31 @@ local function addSliderCard(parent: ScrollingFrame, tabId: string, title: strin
 
     registerFontUpdater(function(font, fSize)
         valLabel.Font = font.Bold
-        valLabel.TextSize = math.round(12 * fSize.Scale)
-        valuePill.Size = UDim2.fromOffset(math.round(82 * fSize.Scale), math.round(26 * fSize.Scale))
+        valLabel.TextSize = math.round(11 * fSize.Scale)
+        valuePill.Size = UDim2.fromOffset(math.round(78 * fSize.Scale), math.round(24 * fSize.Scale))
     end)
 end
 
-local function addInputCard(parent: ScrollingFrame, tabId: string, title: string, desc: string, defaultText: string, placeholder: string, order: number, onEnter: (string) -> ())
-    local card = createCardShell(parent, tabId, title, desc, 0, order)
+-- 4. TEXT INPUT CARD
+local function addInputCard(parent: ScrollingFrame, tabId: string, title: string, desc: string, isCompact: boolean, defaultText: string, placeholder: string, order: number, onEnter: (string) -> ())
+    local card = createCardShell(parent, tabId, title, desc, isCompact, 0, order)
 
     local box = create("TextBox", {
-        AnchorPoint = Vector2.new(1, 0.5),
-        Position = UDim2.new(1, -14, 0.5, 0),
-        Size = UDim2.fromOffset(174, 34),
+        AnchorPoint = isCompact and Vector2.new(0.5, 1) or Vector2.new(1, 0.5),
+        Position = isCompact and UDim2.new(0.5, 0, 1, -8) or UDim2.new(1, -14, 0.5, 0),
+        Size = isCompact and UDim2.new(1, -24, 0, 30) or UDim2.fromOffset(168, 34),
         Text = defaultText,
         PlaceholderText = placeholder,
         ClearTextOnFocus = false,
-        ZIndex = 2106,
+        ZIndex = 6,
         Parent = card
     })
     addCorner(box, 8)
-    local bStroke = addStroke(box, Color3.new(1, 1, 1), 1.2, 0.2)
+    local bStroke = addStroke(box, Color3.new(1, 1, 1), 1, 0.25)
 
     box.FocusLost:Connect(function()
         onEnter(box.Text)
-        notifyStatus(title .. " disimpan")
+        showStatus(title .. " disimpan")
     end)
 
     registerThemeUpdater(function(theme)
@@ -2082,25 +1862,30 @@ local function addInputCard(parent: ScrollingFrame, tabId: string, title: string
 
     registerFontUpdater(function(font, fSize)
         box.Font = font.Medium
-        box.TextSize = math.round(12 * fSize.Scale)
-        box.Size = UDim2.fromOffset(fSize.PillWidth, fSize.PillHeight)
+        box.TextSize = math.round(11 * fSize.Scale)
+        if isCompact then
+            box.Size = UDim2.new(1, -24, 0, math.round(30 * fSize.Scale))
+        else
+            box.Size = UDim2.fromOffset(fSize.PillMinW, fSize.PillHeight)
+        end
     end)
 end
 
+-- 5. ACTION BUTTON CARD
 local function addActionCard(parent: ScrollingFrame, tabId: string, title: string, desc: string, btnLabel: string, order: number, onClick: () -> ())
-    local card = createCardShell(parent, tabId, title, desc, 0, order)
+    local card = createCardShell(parent, tabId, title, desc, false, 0, order)
 
     local actBtn = create("TextButton", {
         AnchorPoint = Vector2.new(1, 0.5),
         Position = UDim2.new(1, -14, 0.5, 0),
-        Size = UDim2.fromOffset(154, 34),
+        Size = UDim2.fromOffset(148, 34),
         Text = btnLabel,
         AutoButtonColor = false,
-        ZIndex = 2106,
+        ZIndex = 6,
         Parent = card
     })
     addCorner(actBtn, 8)
-    local aStroke = addStroke(actBtn, Color3.new(1, 1, 1), 1.2, 0.1)
+    local aStroke = addStroke(actBtn, Color3.new(1, 1, 1), 1, 0.15)
 
     actBtn.MouseButton1Click:Connect(function()
         onClick()
@@ -2115,105 +1900,86 @@ local function addActionCard(parent: ScrollingFrame, tabId: string, title: strin
     registerFontUpdater(function(font, fSize)
         actBtn.Font = font.Bold
         actBtn.TextSize = math.round(11 * fSize.Scale)
-        actBtn.Size = UDim2.fromOffset(math.round(156 * fSize.Scale), fSize.PillHeight)
+        actBtn.Size = UDim2.fromOffset(math.round(150 * fSize.Scale), fSize.PillHeight)
     end)
 end
 
 -- ================================================================================
--- 11. LOGIKA ANIMASI STARTUP ILLUSTRATION (DIPUTAR SAAT PERTAMA KALI DIMULAI)
+-- 11. ANIMASI STARTUP ILLUSTRATION (OTOMATIS SAAT PERTAMA KALI DIMULAI)
 -- ================================================================================
-local skipRequested = false
+local skipIntro = false
 
 SkipIntroBtn.MouseButton1Click:Connect(function()
-    skipRequested = true
+    skipIntro = true
 end)
 
-local function runStartupIllustrationSequence()
+local function playStartupIllustration()
     State.IsLoading = true
-    skipRequested = false
+    skipIntro = false
 
+    setRobloxCoreGuiHidden(true)
     HUDCanvas.Visible = false
     FloatingShortcut.Visible = false
+    TopLeftCrownBar.Visible = true
     ModalBlocker.Visible = true
-    ModalBlocker.BackgroundTransparency = 0.25
+    ModalBlocker.BackgroundTransparency = 0.18
     ModalBlur.Size = 18
 
     StartupOverlay.Visible = true
-    StartupScale.Scale = 0.86
-    BootBarFill.Size = UDim2.new(0, 0, 1, 0)
-    BootPercentLabel.Text = "0%"
-
-    TweenService:Create(StartupScale, TweenSpring, { Scale = 1 }):Play()
+    IntroBarFill.Size = UDim2.fromScale(0, 1)
 
     local stages = {
-        { Pct = 0.28, Text = "[01/04] INITIALIZING CELESTIAL VECTOR ENGINE..." },
-        { Pct = 0.56, Text = "[02/04] LOADING PREMIERE MULTI-STOP SHADERS..." },
-        { Pct = 0.84, Text = "[03/04] CALIBRATING 85% VIEWPORT & MODAL SHIELD..." },
-        { Pct = 1.00, Text = "[04/04] HUAXIA CYBER-HUD READY // WELCOME OPERATOR" },
+        { Pct = 0.35, Label = "Loading Dry Cursed | Hub monochrome shaders..." },
+        { Pct = 0.70, Label = "Calibrating proportional UIScale & layout..." },
+        { Pct = 1.00, Label = "Welcome to Dry Cursed | Hub community" },
     }
 
-    for _, stage in ipairs(stages) do
-        if skipRequested then break end
-        BootStageLabel.Text = stage.Text
-        TweenService:Create(BootBarFill, TweenInfo.new(0.45, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {
-            Size = UDim2.new(stage.Pct, 0, 1, 0)
+    for _, st in ipairs(stages) do
+        if skipIntro then break end
+        TweenService:Create(IntroBarFill, TweenInfo.new(0.38, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {
+            Size = UDim2.fromScale(st.Pct, 1)
         }):Play()
-
-        local steps = 12
-        for s = 1, steps do
-            if skipRequested then break end
-            local displayPct = math.round((stage.Pct - 0.25 * (1 - s / steps)) * 100)
-            BootPercentLabel.Text = tostring(math.clamp(displayPct, 1, 100)) .. "%"
-            task.wait(0.038)
+        for i = 1, 8 do
+            if skipIntro then break end
+            local p = math.clamp(math.round((st.Pct - 0.3 * (1 - i / 8)) * 100), 1, 100)
+            IntroStatusText.Text = string.format("%s (%d%%)", st.Label, p)
+            task.wait(0.035)
         end
     end
 
-    BootBarFill.Size = UDim2.new(1, 0, 1, 0)
-    BootPercentLabel.Text = "100%"
-    BootStageLabel.Text = "◈ SYSTEM ONLINE // LAUNCHING HUD MATRIX"
-    if not skipRequested then
-        task.wait(0.25)
+    IntroBarFill.Size = UDim2.fromScale(1, 1)
+    IntroStatusText.Text = "Ready • 100%"
+    if not skipIntro then
+        task.wait(0.18)
     end
 
-    -- Transisi Keluar Ilustrasi Loading & Membuka 3-Zone HUD Utama
-    local exitTw = TweenService:Create(StartupScale, TweenClose, { Scale = 1.12 })
-    TweenService:Create(StartupOverlay, TweenClose, { BackgroundTransparency = 1 }):Play()
-    exitTw:Play()
-    exitTw.Completed:Wait()
-
     StartupOverlay.Visible = false
-    StartupOverlay.BackgroundTransparency = 0
     State.IsLoading = false
-
     HUDCanvas.Visible = true
-    HUDAnimScale.Scale = 0.78
-    TweenService:Create(ModalBlur, TweenSmooth, { Size = 14 }):Play()
-    TweenService:Create(ModalBlocker, TweenSmooth, { BackgroundTransparency = 0.35 }):Play()
-    TweenService:Create(HUDAnimScale, TweenSpring, { Scale = 1 }):Play()
-    playTabCascadeMotion(State.CurrentTab)
+    animateTabCards(State.CurrentTab)
 end
 
 -- ================================================================================
 -- 12. POPULASI KATEGORI & PANEL STUDIO
 -- ================================================================================
-local PageCombat = createSideTab("Combat", "❖", "Combat & HUD",  "COMBAT & CHARACTER MATRIX", 1)
-local PageVisual = createSideTab("Visual", "✦", "Motion & GFX",  "PREMIERE MOTION & SHADERS", 2)
-local PageTheme  = createSideTab("Theme",  "⬢", "Theme & Font",  "THEME, FONT & LOGO STUDIO", 3)
-local PageSystem = createSideTab("System", "⚙", "Resize & Intro","VIEWPORT, RESIZE & INTRO",  4)
+local PageGeneral = createSideTab("General", "◈", "General",     "General & Character",       1)
+local PageVisual  = createSideTab("Visual",  "❖", "Visuals",     "Monochrome & Deep Blue GFX",2)
+local PageTheme   = createSideTab("Theme",   "⬢", "Theme & Font","Theme, Font & Logo Studio", 3)
+local PageSystem  = createSideTab("System",  "⚙", "Scale & Layout","Proportional Scale & Intro",4)
 
--- [TAB 1: COMBAT & HUD]
-addInputCard(PageCombat, "Combat", "Operator Callsign Tag", "Label identitas karakter pada HUD utama", State.Gameplay.PlayerTag, "Ketik callsign...", 1, function(val)
+-- [TAB 1: GENERAL]
+addInputCard(PageGeneral, "General", "Community Display Tag", "Nama panggilan di dalam Dry Cursed | Hub", false, State.Gameplay.PlayerTag, "Ketik tag...", 1, function(val)
     State.Gameplay.PlayerTag = val
 end)
 
-addSliderCard(PageCombat, "Combat", "Tactical Camera FOV", "Sudut pandang kamera (60° - 110°) secara real-time", 60, 110, State.Gameplay.FOV, "°", 2, function(val)
+addSliderCard(PageGeneral, "General", "Camera Field of View", "Sesuaikan jarak pandang kamera (60° - 110°)", 60, 110, State.Gameplay.FOV, "°", 2, function(val)
     State.Gameplay.FOV = val
     if workspace.CurrentCamera then
         workspace.CurrentCamera.FieldOfView = val
     end
 end)
 
-addToggleCard(PageCombat, "Combat", "Hyper-Sprint Thruster", "Tingkatkan kecepatan gerak karakter secara otomatis", State.Gameplay.SprintBoost, 3, function(on)
+addToggleCard(PageGeneral, "General", "Auto Sprint Movement", "Tingkatkan kecepatan gerak karakter secara halus", State.Gameplay.SprintBoost, 3, function(on)
     State.Gameplay.SprintBoost = on
     local char = LocalPlayer.Character
     local hum = char and char:FindFirstChildOfClass("Humanoid")
@@ -2222,61 +1988,55 @@ addToggleCard(PageCombat, "Combat", "Hyper-Sprint Thruster", "Tingkatkan kecepat
     end
 end)
 
-addToggleCard(PageCombat, "Combat", "Smart Target Lock-On", "Stabilisasi fokus kamera saat mengunci musuh", State.Gameplay.LockOnTarget, 4, function(on)
-    State.Gameplay.LockOnTarget = on
+addToggleCard(PageGeneral, "General", "Smooth Camera Stabilizer", "Redam guncangan kamera saat berpindah arah", State.Gameplay.SmoothCam, 4, function(on)
+    State.Gameplay.SmoothCam = on
 end)
 
--- [TAB 2: MOTION & GFX]
-addToggleCard(PageVisual, "Visual", "Premiere Motion Graphics", "Aktifkan scanline, equalizer, partikel & rotasi gradien", State.MotionEnabled, 1, function(on)
+-- [TAB 2: VISUALS]
+addToggleCard(PageVisual, "Visual", "Lightweight Motion Graphics", "Animasi pergeseran gradien halus & ramah FPS", State.MotionEnabled, 1, function(on)
     State.MotionEnabled = on
-    for _, sc in ipairs(MotionScanlines) do
-        sc.Visible = on
-    end
-    for _, nd in ipairs(MotionNodes) do
-        nd.Node.Visible = on
-    end
 end)
 
-addSelectorCard(PageVisual, "Visual", "Premiere Shader Profile", "Pilih profil gradien dan pencahayaan antarmuka", { "Premiere Ultra", "Cyber Balanced", "Low Latency" }, 1, 2, function(choice)
+addSelectorCard(PageVisual, "Visual", "Gradient Render Profile", "Pilih kedalaman gradien Premiere pada panel", false, { "Premiere Deep", "Monochrome Soft", "High Contrast" }, 1, 2, function(choice)
     State.Gameplay.RenderMode = choice
 end)
 
-addSliderCard(PageVisual, "Visual", "Neon Shimmer Intensity", "Kekuatan kilau gradien dan elemen hologram", 0, 100, State.Gameplay.BloomLevel, "%", 3, function(val)
-    State.Gameplay.BloomLevel = val
+addSliderCard(PageVisual, "Visual", "Deep Blue Ambient Contrast", "Tingkat kepekatan bayangan panel utama", 0, 100, State.Gameplay.ContrastLvl, "%", 3, function(val)
+    State.Gameplay.ContrastLvl = val
 end)
 
-addToggleCard(PageVisual, "Visual", "Modal Background Blur", "Aktifkan blur latar belakang saat menu sedang aktif", true, 4, function(on)
+addToggleCard(PageVisual, "Visual", "Background Focus Blur", "Aktifkan efek blur dunia belakang saat menu tampil", true, 4, function(on)
     ModalBlur.Enabled = on
 end)
 
--- [TAB 3: THEME, FONT & LOGO STUDIO]
-local function populateThemeStudioCards(targetContainer: ScrollingFrame, tabTag: string)
-    addSelectorCard(targetContainer, tabTag, "Premiere Color Theme", "Ganti suasana gradien Premiere & aksen panel", ThemeOrder, State.ThemeIndex, 1, function(_, idx)
+-- [TAB 3: THEME, FONT & LOGO STUDIO (Tampil di Tab Tengah & Panel Kanan)]
+local function populateAppearanceCards(container: ScrollingFrame, tabTag: string, compact: boolean)
+    addSelectorCard(container, tabTag, "Color Theme", "Pilih tema Monochrome & Deep Blue", compact, ThemeOrder, State.ThemeIndex, 1, function(_, idx)
         State.ThemeIndex = idx
         broadcastTheme()
-        notifyStatus("Tema: " .. ThemeOrder[idx])
+        showStatus("Theme: " .. ThemeOrder[idx])
     end)
 
-    addSelectorCard(targetContainer, tabTag, "Typography Font Family", "Ubah jenis huruf di seluruh menu & kartu input", { "Sci-Fi Future", "Modern Gotham", "Tactical Code", "Cyber Michroma" }, State.FontIndex, 2, function(fName, idx)
+    addSelectorCard(container, tabTag, "Font Family", "Pilih jenis huruf seluruh teks", compact, { "Gotham Clean", "Builder Modern", "Jura Minimal", "Mono Technical" }, State.FontIndex, 2, function(fName, idx)
         State.FontIndex = idx
         broadcastFont()
-        notifyStatus("Font: " .. fName)
+        showStatus("Font: " .. fName)
     end)
 
-    addSelectorCard(targetContainer, tabTag, "Font & Selection Scale", "BG pilihan & tinggi kartu menyesuaikan ukuran font", { "Compact (Kecil)", "Standard (Ideal)", "Large (Besar)" }, State.FontSizeIndex, 3, function(sName, idx)
+    addSelectorCard(container, tabTag, "Text & Button Size", "Ukuran teks & tombol ikut menyesuaikan", compact, { "Small (90%)", "Normal (100%)", "Large (112%)" }, State.FontSizeIndex, 3, function(sName, idx)
         State.FontSizeIndex = idx
         broadcastFont()
-        notifyStatus("Ukuran Font: " .. sName)
+        showStatus("Size: " .. sName)
     end)
 
-    addSelectorCard(targetContainer, tabTag, "Custom Emblem Logo", "Pilih ikon logo untuk Header, Intro & Shortcut", { "❖ Premiere Core", "⬢ Hexa Matrix", "✦ Astral Nova", "⚡ Cyber Pulse" }, State.LogoIndex, 4, function(lName, idx)
+    addSelectorCard(container, tabTag, "Custom Emblem", "Pilih simbol logo kiri atas", compact, { "◈ Dry Crest", "❖ Eclipse Mono", "⬢ Hexa Art", "✦ North Star" }, State.LogoIndex, 4, function(lName, idx)
         State.LogoIndex = idx
         State.CustomLogoAsset = ""
         updateLogoVisuals()
-        notifyStatus("Logo: " .. lName)
+        showStatus("Logo: " .. lName)
     end)
 
-    addInputCard(targetContainer, tabTag, "Custom Logo Asset ID", "Isi rbxassetid://123456 (kosongkan untuk simbol)", "", "rbxassetid://...", 5, function(text)
+    addInputCard(container, tabTag, "Custom Logo ID", "Masukkan rbxassetid:// gambar", compact, "", "rbxassetid://...", 5, function(text)
         local trimmed = string.gsub(text, "^%s*(.-)%s*$", "%1")
         if trimmed ~= "" and not string.find(trimmed, "rbxassetid://") and tonumber(trimmed) then
             trimmed = "rbxassetid://" .. trimmed
@@ -2286,90 +2046,51 @@ local function populateThemeStudioCards(targetContainer: ScrollingFrame, tabTag:
     end)
 end
 
-populateThemeStudioCards(PageTheme, "Theme")
-populateThemeStudioCards(RightScroll, "")
+populateAppearanceCards(PageTheme, "Theme", false)
+populateAppearanceCards(RightStudioScroll, "", true)
 
--- [TAB 4: RESIZE & INTRO]
-addActionCard(PageSystem, "System", "Replay Startup Illustration", "Putar ulang animasi ilustrasi loading saat awal mulai", "▶ REPLAY INTRO", 1, function()
-    task.spawn(runStartupIllustrationSequence)
+-- [TAB 4: SCALE & LAYOUT]
+addActionCard(PageSystem, "System", "Replay Startup Illustration", "Putar ulang ilustrasi Monochrome Eclipse saat mulai", "▶ Replay Intro", 1, function()
+    task.spawn(playStartupIllustration)
 end)
 
-addSelectorCard(PageSystem, "System", "Menu Dock Position", "Pindahkan posisi panel ke Kiri, Tengah, atau Kanan", dockModes, 1, 2, function(mode)
+addSelectorCard(PageSystem, "System", "Panel Dock Position", "Atur tata letak di Kiri, Tengah, atau Kanan", false, dockModes, 1, 2, function(mode)
     applyLayoutMode(mode)
 end)
 
-addSliderCard(PageSystem, "System", "Global UI Scale Multiplier", "Kalibrasi proporsi di atas ukuran sudut kanan bawah", 80, 115, State.UIScalePercent, "%", 3, function(val)
-    State.UIScalePercent = val
-    updateViewportScale()
+addSliderCard(PageSystem, "System", "Proportional Window Scale", "Kecilkan/besarkan seluruh menu + teks tanpa crop", 55, 95, math.round(State.UserZoomFactor * 100), "%", 3, function(val)
+    State.UserZoomFactor = val / 100
+    computeAndApplyProportionalScale()
 end)
 
-addSliderCard(PageSystem, "System", "Master Audio Output", "Tingkat volume utama efek antarmuka dan sekitar", 0, 100, State.Gameplay.MasterVolume, "%", 4, function(val)
+addSliderCard(PageSystem, "System", "Master Audio Volume", "Volume utama suara antarmuka dan efek", 0, 100, State.Gameplay.MasterVolume, "%", 4, function(val)
     State.Gameplay.MasterVolume = val
 end)
 
-selectTab("Combat")
+selectTab("General")
 applyLayoutMode("Tri-HUD")
 updateLogoVisuals()
 
 -- ================================================================================
--- 13. PROCEDURAL MOTION GRAPHICS ENGINE (RENDERSTEPPED LOOP)
+-- 13. LIGHTWEIGHT MOTION GRAPHICS (RINGAN, HALUS, HEMAT CPU/GPU)
 -- ================================================================================
-local motionClock = 0
+local motionTime = 0
 
 RunService.RenderStepped:Connect(function(dt: number)
     if not State.MotionEnabled then return end
-    motionClock += dt
+    motionTime += dt
 
-    -- 1. Putar UIGradient pada Border & Logo untuk kesan Premiere Shimmer
-    for _, item in ipairs(RotatingGradients) do
-        item.Grad.Rotation = (item.Grad.Rotation + dt * item.Speed) % 360
-    end
-
-    -- 2. Animasi Ilustrasi Startup Loading jika sedang dalam fase Booting Awal
+    -- Saat layar Startup Loading aktif, putar perlahan cincin Monochrome Eclipse
     if State.IsLoading and StartupOverlay.Visible then
-        OuterOrbitRing.Rotation = (motionClock * 24) % 360
-        InnerChronoRing.Rotation = -(motionClock * 42) % 360
-        DiamondFrameA.Rotation = 45 + math.sin(motionClock * 2.2) * 12
-        DiamondFrameB.Rotation = -math.sin(motionClock * 2.2) * 12
-
-        local pulse = (math.sin(motionClock * 4.5) + 1) * 0.5
-        ArtAura.Size = UDim2.fromOffset(math.round(195 + pulse * 38), math.round(195 + pulse * 38))
-        local laserY = ((motionClock * 0.65) % 1.0)
-        IllustrationLaserScan.Position = UDim2.fromScale(0.5, laserY)
+        OuterMonoRing.Rotation = (motionTime * 14) % 360
+        ArchSquare.Rotation = 45 - (motionTime * 10) % 360
         return
     end
 
-    -- 3. Jika Menu Diminimize, jalankan efek Pulse Ring pada Floating Shortcut Icon
-    if State.IsMinimized then
-        local pulse = (math.sin(motionClock * 3.5) + 1) * 0.5
-        ShortcutPulseRing.Size = UDim2.new(1, math.round(pulse * 14), 1, math.round(pulse * 14))
-        pulseRingStroke.Transparency = 0.25 + (pulse * 0.7)
-        return
-    end
-
-    -- 4. Animasi Kilau Garis Atas (TopBar Shimmer Sweep)
-    local sweepX = ((motionClock * 0.28) % 1.4) - 0.35
-    TopShimmerBar.Position = UDim2.fromScale(sweepX, 0)
-
-    -- 5. Animasi Live Telemetry Equalizer Bars di TopBar
-    for idx, bar in ipairs(EqBars) do
-        local wave = (math.sin(motionClock * 6.5 + idx * 0.9) + 1) * 0.5
-        local h = math.round(6 + wave * 18)
-        bar.Size = UDim2.fromOffset(4, h)
-    end
-
-    -- 6. Animasi Holographic Scanline di dalam Panel
-    local scanY = ((motionClock * 0.22) % 1.3) - 0.15
-    for _, sc in ipairs(MotionScanlines) do
-        sc.Position = UDim2.fromScale(0, scanY)
-    end
-
-    -- 7. Animasi Floating Cyber Geo-Nodes di dalam Panel
-    for _, nd in ipairs(MotionNodes) do
-        local offsetY = math.sin(motionClock * nd.Speed + nd.Phase) * 0.035
-        local offsetX = math.cos(motionClock * (nd.Speed * 0.7) + nd.Phase) * 0.015
-        nd.Node.Position = UDim2.fromScale(nd.BaseX + offsetX, nd.BaseY + offsetY)
-        nd.Node.Rotation = (motionClock * 28 * nd.Speed) % 360
+    -- Pergeseran Offset gradien Premiere yang sangat ringan & tenang
+    local gentleShift = math.sin(motionTime * 0.9) * 0.08
+    for _, grad in ipairs(ShimmerGradients) do
+        grad.Offset = Vector2.new(gentleShift, 0)
     end
 end)
 
@@ -2386,7 +2107,7 @@ SearchInput:GetPropertyChangedSignal("Text"):Connect(function()
         return
     end
 
-    CenterHeaderTitle.Text = 'FILTER // "' .. SearchInput.Text .. '"'
+    CenterCategoryHeader.Text = 'Filter: "' .. SearchInput.Text .. '"'
     local shownTab: string? = nil
     for _, item in ipairs(SearchableCards) do
         local matched = string.find(item.Keywords, q, 1, true) ~= nil
@@ -2402,71 +2123,57 @@ SearchInput:GetPropertyChangedSignal("Text"):Connect(function()
 end)
 
 -- ================================================================================
--- 15. ANIMASI MINIMIZE & MAXIMIZE (FOKUS MODAL <-> FLOATING SHORTCUT DEPAN)
+-- 15. MINIMIZE & MAXIMIZE (MENUTUPI ROBLOX TOPBAR & BUKA KEMBALI DENGAN CEPAT)
 -- ================================================================================
-local busyAnim = false
+local isTransitioning = false
 
-local function setHUDMinimized(minimize: boolean)
-    if busyAnim or State.IsLoading or State.IsMinimized == minimize then return end
-    busyAnim = true
+local function setMinimizedState(minimize: boolean)
+    if isTransitioning or State.IsLoading or State.IsMinimized == minimize then return end
+    isTransitioning = true
     State.IsMinimized = minimize
 
     if minimize then
+        setRobloxCoreGuiHidden(false)
         TweenService:Create(ModalBlur, TweenClose, { Size = 0 }):Play()
         TweenService:Create(ModalBlocker, TweenClose, { BackgroundTransparency = 1 }):Play()
-        local closeTw = TweenService:Create(HUDAnimScale, TweenClose, { Scale = 0 })
-        closeTw:Play()
-        closeTw.Completed:Wait()
 
         HUDCanvas.Visible = false
         ModalBlocker.Visible = false
+        TopLeftCrownBar.Visible = false
 
         FloatingShortcut.Visible = true
-        FloatingShortcut.Size = UDim2.fromOffset(12, 12)
-        TweenService:Create(FloatingShortcut, TweenSpring, { Size = UDim2.fromOffset(68, 68) }):Play()
     else
-        local hideShort = TweenService:Create(FloatingShortcut, TweenFast, { Size = UDim2.fromOffset(12, 12) })
-        hideShort:Play()
-        hideShort.Completed:Wait()
+        setRobloxCoreGuiHidden(true)
         FloatingShortcut.Visible = false
+        TopLeftCrownBar.Visible = true
 
         ModalBlocker.Visible = true
-        ModalBlocker.BackgroundTransparency = 1
+        ModalBlocker.BackgroundTransparency = 0.22
         HUDCanvas.Visible = true
-        HUDAnimScale.Scale = 0.72
-
-        TweenService:Create(ModalBlur, TweenSmooth, { Size = 14 }):Play()
-        TweenService:Create(ModalBlocker, TweenSmooth, { BackgroundTransparency = 0.35 }):Play()
-        TweenService:Create(HUDAnimScale, TweenSpring, { Scale = 1 }):Play()
-        playTabCascadeMotion(State.CurrentTab)
+        TweenService:Create(ModalBlur, TweenSmooth, { Size = 16 }):Play()
+        computeAndApplyProportionalScale()
+        animateTabCards(State.CurrentTab)
     end
 
     task.wait(0.08)
-    busyAnim = false
+    isTransitioning = false
 end
 
 MinimizeRedBtn.MouseButton1Click:Connect(function()
-    setHUDMinimized(true)
+    setMinimizedState(true)
 end)
 
-FloatingShortcut.MouseEnter:Connect(function()
-    TweenService:Create(FloatingShortcut, TweenFast, { Size = UDim2.fromOffset(74, 74) }):Play()
-end)
-FloatingShortcut.MouseLeave:Connect(function()
-    TweenService:Create(FloatingShortcut, TweenFast, { Size = UDim2.fromOffset(68, 68) }):Play()
-end)
-
-makeDraggable(TopCommandBar, HUDCanvas, nil)
+makeDraggable(TopBar, HUDCanvas, nil)
 makeDraggable(FloatingShortcut, FloatingShortcut, function()
-    setHUDMinimized(false)
+    setMinimizedState(false)
 end)
 
 UserInputService.InputBegan:Connect(function(input: InputObject, gameProcessed: boolean)
     if gameProcessed then return end
     if input.KeyCode == Enum.KeyCode.RightControl then
-        setHUDMinimized(not State.IsMinimized)
+        setMinimizedState(not State.IsMinimized)
     end
 end)
 
--- // JALANKAN ILUSTRASI LOADING OTOMATIS SAAT SCRIPT PERTAMA KALI DIMULAI
-task.spawn(runStartupIllustrationSequence)
+-- // MULAI DENGAN ILUSTRASI MONOCHROME ECLIPSE SAAT PERTAMA KALI DIJALANKAN
+task.spawn(playStartupIllustration)
